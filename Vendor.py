@@ -6,7 +6,7 @@ import streamlit.components.v1 as components
 # -------------------------------
 # CONFIGURATION
 # -------------------------------
-VENDOR_FILE = "Connected Booking System Evaluation Template (NDA).xlsx - Scoring Upload.csv"
+VENDOR_FILE = "Connected Booking System Evaluation Template (NDA).xlsx - Scoring Upload (1).csv"
 
 REQUIREMENT_WEIGHTS = {
     "critical": 4,
