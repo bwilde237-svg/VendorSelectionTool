@@ -1,6 +1,7 @@
 import os
 import streamlit as st
 import pandas as pd
+import streamlit.components.v1 as components
 
 # -------------------------------
 # CONFIGURATION
@@ -185,58 +186,76 @@ def calculate_scores(vendor_df, criteria_df):
 def convert_df(df):
     return df.to_csv(index=False).encode("utf-8")
 
-# New: robust display helper that removes a leading index-like column (if present)
-def display_no_left_index_col(df, height=None):
+# NEW: universal display helper that guarantees the left-most index/number column isn't shown.
+def display_df_no_index(df: pd.DataFrame, height: int | None = None):
     """
-    Display DataFrame in Streamlit while ensuring the left-most "index-like" column is removed.
-    Rules to drop the first column:
-      - first column name looks like '', 'unnamed: 0', 'index' (case-insensitive), OR
-      - first column values are exactly [0,1,2,...,n-1] (string or int)
-    This handles cases where input CSVs contain an exported index column named 'Unnamed: 0' or similar.
+    Display DataFrame in Streamlit without the left-hand index column.
+
+    Approach:
+      1) Reset index (drop=True) so index isn't promoted to a column.
+      2) Try pandas Styler.hide_index() and pass the Styler to st.dataframe (preferred).
+      3) If Styler isn't usable in this environment, render HTML with df.to_html(index=False)
+         inside st.components.v1.html (reliable).
+      4) Final fallback: convert to records and display as a DataFrame.
     """
     if df is None:
         return
+    # Make a copy and remove index
+    df2 = df.copy().reset_index(drop=True)
 
-    df2 = df.copy()
-    # normalize index (so index values don't become a column)
-    df2 = df2.reset_index(drop=True)
-
-    # If there is nothing to show, just display empty
-    if df2.shape[1] == 0:
-        st.dataframe(df2, use_container_width=True, height=height)
-        return
-
-    first_col_name = str(df2.columns[0]).strip().lower()
-    first_col_vals = df2.iloc[:, 0].tolist()
-
-    # check name-based heuristics
-    name_flag = first_col_name in ["", "unnamed: 0", "unnamed:0", "unnamed", "index"]
-
-    # check value-based heuristic: sequence 0..n-1 (as ints or strings)
-    seq_flag = False
-    try:
-        n = len(first_col_vals)
-        # create sequences as strings and ints for tolerant comparison
-        seq_strs = [str(i) for i in range(n)]
-        seq_ints = list(range(n))
-        if [str(v) for v in first_col_vals] == seq_strs or first_col_vals == seq_ints:
-            seq_flag = True
-    except Exception:
+    # If first column is an exported index column (unnamed or 0..n-1) drop it.
+    if df2.shape[1] >= 1:
+        first_col_name = str(df2.columns[0]).strip().lower()
+        first_col_vals = df2.iloc[:, 0].tolist()
+        name_flag = first_col_name in ["", "unnamed: 0", "unnamed:0", "unnamed", "index", "0"]
         seq_flag = False
+        try:
+            n = len(first_col_vals)
+            seq_strs = [str(i) for i in range(n)]
+            seq_ints = list(range(n))
+            if [str(v) for v in first_col_vals] == seq_strs or first_col_vals == seq_ints:
+                seq_flag = True
+        except Exception:
+            seq_flag = False
+        if name_flag or seq_flag:
+            if df2.shape[1] >= 2:
+                df2 = df2.iloc[:, 1:]
+            # otherwise leave as-is (single column only)
 
-    if name_flag or seq_flag:
-        # drop the first column
-        df2 = df2.iloc[:, 1:]
+    # Try styler.hide_index -> st.dataframe(styler) (works when pandas supports it)
+    try:
+        styler = df2.style.hide_index()
+        kwargs = {"use_container_width": True}
+        if height is not None:
+            kwargs["height"] = height
+        st.dataframe(styler, **kwargs)
+        return
+    except Exception:
+        # If styler not available, fall through to HTML renderer
+        pass
 
-    # Finally, to avoid Streamlit rendering an extra index column in some environments,
-    # convert to records and re-create a DataFrame (this removes any index-like structure).
-    df_to_show = pd.DataFrame.from_records(df2.to_dict(orient="records"))
-
-    # display (only pass height when provided)
-    kwargs = {"use_container_width": True}
-    if height is not None:
-        kwargs["height"] = height
-    st.dataframe(df_to_show, **kwargs)
+    # Render as HTML table without index (reliable across pandas/streamlit versions)
+    try:
+        html = df2.to_html(index=False, classes="table table-striped", border=0)
+        # Small CSS to make table width responsive in the component
+        html_block = f"""
+        <div style="width:100%">{html}</div>
+        """
+        # height param: when provided, use it; otherwise let component size itself
+        if height is None:
+            components.html(html_block, scrolling=True, height=300)
+        else:
+            components.html(html_block, scrolling=True, height=height)
+        return
+    except Exception:
+        # Last fallback: convert to records and show via st.dataframe (this usually removes index)
+        records = df2.to_dict(orient="records")
+        df_show = pd.DataFrame.from_records(records)
+        kwargs = {"use_container_width": True}
+        if height is not None:
+            kwargs["height"] = height
+        st.dataframe(df_show, **kwargs)
+        return
 
 # -------------------------------
 # STREAMLIT APP
@@ -316,13 +335,13 @@ if criteria_file is not None and vendor_df is not None:
         top_summary_minimal.insert(0, "Rank", range(1, 1 + len(top_summary_minimal)))
 
         st.subheader(f"Top {n_top} Vendors — Overall Rankings")
-        display_no_left_index_col(top_summary_minimal)
+        display_df_no_index(top_summary_minimal)
 
         # Business area breakdown restricted to top N
         area_cols = [c for c in summary_df.columns if c not in ["Vendor", "Total Score (%)"]]
         if area_cols:
             st.subheader("Business Area Breakdown (Top selection)")
-            display_no_left_index_col(top_summary[["Vendor"] + area_cols])
+            display_df_no_index(top_summary[["Vendor"] + area_cols])
 
         # Vendor multi-select (from Top-N)
         st.subheader("Inspect Vendor(s) Criteria (select from the Top selection)")
@@ -356,13 +375,13 @@ if criteria_file is not None and vendor_df is not None:
                     with cols_left:
                         with st.expander("Functions that Meet Criteria", expanded=True):
                             if not met_df.empty:
-                                display_no_left_index_col(met_df)
+                                display_df_no_index(met_df)
                             else:
                                 st.info("No functions meeting criteria for this vendor.")
                     with cols_right:
                         with st.expander("Functions that Do Not Meet Criteria", expanded=True):
                             if not not_met_df.empty:
-                                display_no_left_index_col(not_met_df)
+                                display_df_no_index(not_met_df)
                             else:
                                 st.info("All scored functions meet criteria for this vendor!")
 
@@ -373,10 +392,10 @@ if criteria_file is not None and vendor_df is not None:
                         mime="text/csv"
                     )
 
-        # Detailed Results (Top selection) - placed after inspect UI
+        # Detailed Results (Top selection) - after inspect UI
         st.subheader("Detailed Results (Top selection)")
         filtered_detailed = detailed_df[detailed_df["Vendor"].isin(top_vendors)].reset_index(drop=True)
-        display_no_left_index_col(filtered_detailed, height=500)
+        display_df_no_index(filtered_detailed, height=500)
 
         # Download buttons
         st.download_button(
