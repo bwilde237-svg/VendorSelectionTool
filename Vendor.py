@@ -253,12 +253,12 @@ if criteria_file is not None and vendor_df is not None:
 
     st.success("✅ Scoring complete!")
 
-    # Allow the user to choose how many top vendors to display (default 10).
+    # Allow the user to choose how many top vendors to display (default 5).
     if summary_df.empty:
         st.info("No scored vendors to display.")
     else:
         max_top = len(summary_df)
-        default_top = 10 if max_top >= 10 else max_top
+        default_top = 5 if max_top >= 5 else max_top
         n_top = st.slider(
             "Number of top vendors to display",
             min_value=1,
@@ -270,23 +270,24 @@ if criteria_file is not None and vendor_df is not None:
         # Top N sorted summary
         top_summary = summary_df.sort_values("Total Score (%)", ascending=False).head(n_top)
 
-        st.subheader(f"Top {n_top} Vendors — Overall Rankings")
-        st.dataframe(top_summary, use_container_width=True)
+        # Show only Vendor and Total Score (%) in the Top-N table (user requested),
+        # and add a Rank column (1-based).
+        top_summary_minimal = top_summary[["Vendor", "Total Score (%)"]].copy()
+        top_summary_minimal = top_summary_minimal.reset_index(drop=True)
+        top_summary_minimal.insert(0, "Rank", range(1, 1 + len(top_summary_minimal)))
 
-        # Business area breakdown restricted to top N
+        st.subheader(f"Top {n_top} Vendors — Overall Rankings")
+        st.dataframe(top_summary_minimal, use_container_width=True)
+
+        # Business area breakdown restricted to top N (kept separate)
         area_cols = [c for c in summary_df.columns if c not in ["Vendor", "Total Score (%)"]]
         if area_cols:
             st.subheader("Business Area Breakdown (Top selection)")
             st.dataframe(top_summary[["Vendor"] + area_cols], use_container_width=True)
 
-        # Detailed results filtered to top N vendors
-        st.subheader("Detailed Results (Top selection)")
-        top_vendors = top_summary["Vendor"].tolist()
-        filtered_detailed = detailed_df[detailed_df["Vendor"].isin(top_vendors)]
-        st.dataframe(filtered_detailed, use_container_width=True)
-
         # Vendor multi-select for inspection (populate from Top-N)
         st.subheader("Inspect Vendor(s) Criteria (select from the Top selection)")
+        top_vendors = top_summary["Vendor"].tolist()
         vendor_select = st.multiselect(
             "Select vendor(s) to inspect",
             options=top_vendors,
@@ -335,7 +336,12 @@ if criteria_file is not None and vendor_df is not None:
                         mime="text/csv"
                     )
 
-        # Download buttons: full summary, full detailed, and top summary
+        # After the inspect UI, show the Detailed Results table filtered to the Top-N selection
+        st.subheader("Detailed Results (Top selection)")
+        filtered_detailed = detailed_df[detailed_df["Vendor"].isin(top_vendors)]
+        st.dataframe(filtered_detailed, use_container_width=True)
+
+        # Download buttons: full summary, full detailed, and top summary (top summary export limited to Rank+Vendor+Total Score)
         st.download_button(
             label="⬇️ Download Full Summary CSV",
             data=convert_df(summary_df),
@@ -351,9 +357,9 @@ if criteria_file is not None and vendor_df is not None:
         )
 
         st.download_button(
-            label=f"⬇️ Download Top {n_top} Summary CSV",
-            data=convert_df(top_summary),
-            file_name=f"vendor_scores_top_{n_top}_summary.csv",
+            label=f"⬇️ Download Top {n_top} Summary CSV (Rank + Vendor + Total Score)",
+            data=convert_df(top_summary_minimal),
+            file_name=f"vendor_scores_top_{n_top}_summary_minimal.csv",
             mime="text/csv"
         )
 
