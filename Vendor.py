@@ -186,24 +186,23 @@ def calculate_scores(vendor_df, criteria_df):
 def convert_df(df):
     return df.to_csv(index=False).encode("utf-8")
 
-# NEW: universal display helper that guarantees the left-most index/number column isn't shown.
+# NEW: universal display helper that ensures no left-hand index is shown and enforces readable colors.
 def display_df_no_index(df: pd.DataFrame, height: int | None = None):
     """
     Display DataFrame in Streamlit without the left-hand index column.
-
-    Approach:
-      1) Reset index (drop=True) so index isn't promoted to a column.
-      2) Try pandas Styler.hide_index() and pass the Styler to st.dataframe (preferred).
-      3) If Styler isn't usable in this environment, render HTML with df.to_html(index=False)
-         inside st.components.v1.html (reliable).
-      4) Final fallback: convert to records and display as a DataFrame.
+    Strategy:
+      - reset index(drop=True)
+      - drop obvious exported-index first column (unnamed/0/sequence)
+      - try pandas Styler.hide_index() -> st.dataframe(styler)
+      - else render df.to_html(index=False) inside components.html with CSS that forces readable colors in dark theme
+      - fallback: convert to records and display with st.dataframe
     """
     if df is None:
         return
-    # Make a copy and remove index
+
     df2 = df.copy().reset_index(drop=True)
 
-    # If first column is an exported index column (unnamed or 0..n-1) drop it.
+    # drop obvious exported index column if present
     if df2.shape[1] >= 1:
         first_col_name = str(df2.columns[0]).strip().lower()
         first_col_vals = df2.iloc[:, 0].tolist()
@@ -220,9 +219,8 @@ def display_df_no_index(df: pd.DataFrame, height: int | None = None):
         if name_flag or seq_flag:
             if df2.shape[1] >= 2:
                 df2 = df2.iloc[:, 1:]
-            # otherwise leave as-is (single column only)
 
-    # Try styler.hide_index -> st.dataframe(styler) (works when pandas supports it)
+    # Try pandas Styler.hide_index() (best)
     try:
         styler = df2.style.hide_index()
         kwargs = {"use_container_width": True}
@@ -231,31 +229,42 @@ def display_df_no_index(df: pd.DataFrame, height: int | None = None):
         st.dataframe(styler, **kwargs)
         return
     except Exception:
-        # If styler not available, fall through to HTML renderer
         pass
 
-    # Render as HTML table without index (reliable across pandas/streamlit versions)
+    # Render as HTML with strong CSS (uses media query and !important to override theme)
     try:
-        html = df2.to_html(index=False, classes="table table-striped", border=0)
-        # Small CSS to make table width responsive in the component
-        html_block = f"""
-        <div style="width:100%">{html}</div>
+        html_table = df2.to_html(index=False, border=0, classes="mytable")
+        css = """
+        <style>
+        table.mytable { width:100%; border-collapse:collapse; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial; }
+        table.mytable th, table.mytable td { padding:8px 12px; border-bottom:1px solid rgba(0,0,0,0.08) !important; color: #111 !important; }
+        table.mytable th { font-weight:700; background:transparent !important; }
+        @media (prefers-color-scheme: dark) {
+            table.mytable th, table.mytable td { color: #e6eef8 !important; border-bottom:1px solid rgba(255,255,255,0.06) !important; }
+            table.mytable th { color: #fff !important; }
+            table.mytable td { color: #ddd !important; }
+            table.mytable { background: transparent !important; }
+        }
+        .mytable { table-layout: auto; }
+        .table-wrapper { width:100%; overflow:auto; }
+        </style>
         """
-        # height param: when provided, use it; otherwise let component size itself
+        html_block = f"<div class='table-wrapper'>{css}{html_table}</div>"
         if height is None:
             components.html(html_block, scrolling=True, height=300)
         else:
             components.html(html_block, scrolling=True, height=height)
         return
     except Exception:
-        # Last fallback: convert to records and show via st.dataframe (this usually removes index)
-        records = df2.to_dict(orient="records")
-        df_show = pd.DataFrame.from_records(records)
-        kwargs = {"use_container_width": True}
-        if height is not None:
-            kwargs["height"] = height
-        st.dataframe(df_show, **kwargs)
-        return
+        pass
+
+    # Last fallback: records-based DataFrame display (removes index)
+    records = df2.to_dict(orient="records")
+    df_show = pd.DataFrame.from_records(records)
+    kwargs = {"use_container_width": True}
+    if height is not None:
+        kwargs["height"] = height
+    st.dataframe(df_show, **kwargs)
 
 # -------------------------------
 # STREAMLIT APP
