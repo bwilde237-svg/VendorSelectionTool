@@ -160,9 +160,6 @@ def calculate_scores(vendor_df, criteria_df):
             resp_score = RESPONSE_SCORES.get(resp, None)
             if resp_score is None:
                 resp_score = 0.0
-                resp_note = f"Unknown response '{raw_resp}'"
-            else:
-                resp_note = ""
 
             weighted_score = resp_score * weight
             total_score += weighted_score
@@ -182,7 +179,6 @@ def calculate_scores(vendor_df, criteria_df):
                 "Function": func_col,
                 "Requirement": req,
                 "Response": raw_resp,
-                "Response Note": resp_note,
                 "Weighted Score (%) of that function": weighted_pct,
                 "Meets Criteria": meets
             })
@@ -289,45 +285,55 @@ if criteria_file is not None and vendor_df is not None:
         filtered_detailed = detailed_df[detailed_df["Vendor"].isin(top_vendors)]
         st.dataframe(filtered_detailed, use_container_width=True)
 
-        # Vendor selector for inspection (dropdown)
-        st.subheader("Inspect a Vendor's Criteria (select from the Top selection)")
-        vendor_select = st.selectbox(
-            "Select vendor to inspect",
+        # Vendor multi-select for inspection (populate from Top-N)
+        st.subheader("Inspect Vendor(s) Criteria (select from the Top selection)")
+        vendor_select = st.multiselect(
+            "Select vendor(s) to inspect",
             options=top_vendors,
-            index=0
+            default=[top_vendors[0]] if top_vendors else [],
+            help="Pick one or more vendors to inspect. Each vendor will get its own tab."
         )
 
-        if vendor_select:
-            vendor_rows = detailed_df[detailed_df["Vendor"] == vendor_select]
-            if vendor_rows.empty:
-                st.warning(
-                    f"No detailed criteria rows found for '{vendor_select}'. This can happen if the vendor "
-                    "file doesn't have matching function columns for the criteria file."
-                )
-            else:
-                met_df = vendor_rows[vendor_rows["Meets Criteria"] == "Meets Criteria"].reset_index(drop=True)
-                not_met_df = vendor_rows[vendor_rows["Meets Criteria"] != "Meets Criteria"].reset_index(drop=True)
+        if not vendor_select:
+            st.info("Select at least one vendor to inspect their criteria.")
+        else:
+            # Create a tab per selected vendor so you can compare quickly
+            tabs = st.tabs(vendor_select)
+            for tab_label, tab in zip(vendor_select, tabs):
+                with tab:
+                    vendor_rows = detailed_df[detailed_df["Vendor"] == tab_label]
+                    if vendor_rows.empty:
+                        st.warning(
+                            f"No detailed criteria rows found for '{tab_label}'. This can happen if the vendor "
+                            "file doesn't have matching function columns for the criteria file."
+                        )
+                        continue
 
-                st.markdown(f"**{vendor_select} — Summary:** {len(met_df)} functions meet criteria; {len(not_met_df)} do not meet.")
-                with st.expander("Show functions that Meet Criteria", expanded=True):
-                    if not met_df.empty:
-                        st.dataframe(met_df, use_container_width=True)
-                    else:
-                        st.info("No functions meeting criteria for this vendor.")
+                    met_df = vendor_rows[vendor_rows["Meets Criteria"] == "Meets Criteria"].reset_index(drop=True)
+                    not_met_df = vendor_rows[vendor_rows["Meets Criteria"] != "Meets Criteria"].reset_index(drop=True)
 
-                with st.expander("Show functions that Do Not Meet Criteria", expanded=True):
-                    if not not_met_df.empty:
-                        st.dataframe(not_met_df, use_container_width=True)
-                    else:
-                        st.info("All scored functions meet criteria for this vendor!")
+                    st.markdown(f"**{tab_label} — Summary:** {len(met_df)} functions meet criteria; {len(not_met_df)} do not meet.")
+                    cols_left, cols_right = st.columns(2)
+                    with cols_left:
+                        with st.expander("Functions that Meet Criteria", expanded=True):
+                            if not met_df.empty:
+                                st.dataframe(met_df, use_container_width=True)
+                            else:
+                                st.info("No functions meeting criteria for this vendor.")
+                    with cols_right:
+                        with st.expander("Functions that Do Not Meet Criteria", expanded=True):
+                            if not not_met_df.empty:
+                                st.dataframe(not_met_df, use_container_width=True)
+                            else:
+                                st.info("All scored functions meet criteria for this vendor!")
 
-                # Download selected vendor's detailed rows
-                st.download_button(
-                    label=f"⬇️ Download {vendor_select} Detailed CSV",
-                    data=convert_df(vendor_rows),
-                    file_name=f"{vendor_select}_detailed.csv",
-                    mime="text/csv"
-                )
+                    # Download selected vendor's detailed rows
+                    st.download_button(
+                        label=f"⬇️ Download {tab_label} Detailed CSV",
+                        data=convert_df(vendor_rows),
+                        file_name=f"{tab_label}_detailed.csv",
+                        mime="text/csv"
+                    )
 
         # Download buttons: full summary, full detailed, and top summary
         st.download_button(
