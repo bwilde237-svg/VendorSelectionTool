@@ -316,10 +316,7 @@ if criteria_file is not None and vendor_df is not None:
 
     st.success("✅ Scoring complete!")
 
-    # --- Culturehost filter checkbox (user requested) ---
-    # This checkbox toggles a filter: when checked, the app will restrict all outputs to vendors
-    # that have "Culturehost Connection" == Yes (case-insensitive). It also attempts to accept
-    # common true-ish values (y, true, 1).
+    # --- CultureHosts filter checkbox (optional) ---
     def find_col_case_insensitive(df, target_name):
         target_norm = normalize_case(target_name)
         for c in df.columns:
@@ -327,27 +324,70 @@ if criteria_file is not None and vendor_df is not None:
                 return c
         return None
 
-    filter_ch_yes = st.checkbox("Only show vendors with Culturehost Connection == Yes", value=False, key="filter_ch_yes")
+    filter_ch_yes = st.checkbox("Only show vendors with CultureHosts Connection == Yes", value=False, key="filter_ch_yes")
 
-    # compute list of vendors that match the Culturehost Connection == yes
+    # compute list of vendors that match the CultureHosts Connection == yes
     filtered_vendor_names = None
     if filter_ch_yes:
         vendor_col_actual = find_col_case_insensitive(vendor_df, "vendor")
-        ch_col_actual = find_col_case_insensitive(vendor_df, "Culturehost Connection")
+        ch_col_actual = find_col_case_insensitive(vendor_df, "CultureHosts Connection")
         if vendor_col_actual is None:
-            st.warning("Vendor file does not contain a 'Vendor' column (case-insensitive); cannot apply Culturehost filter.")
+            st.warning("Vendor file does not contain a 'Vendor' column (case-insensitive); cannot apply CultureHosts filter.")
             filtered_vendor_names = []
         elif ch_col_actual is None:
-            st.warning("Vendor file does not contain a 'Culturehost Connection' column (case-insensitive).")
+            st.warning("Vendor file does not contain a 'CultureHosts Connection' column (case-insensitive).")
             filtered_vendor_names = []
         else:
             series = vendor_df[ch_col_actual].astype(str).apply(lambda x: normalize_case(x))
             accepted_yes = {"yes", "y", "true", "1"}
             filtered_vendor_names = vendor_df.loc[series.isin(accepted_yes), vendor_col_actual].astype(str).tolist()
             if not filtered_vendor_names:
-                st.info("No vendors found with Culturehost Connection == 'Yes'")
+                st.info("No vendors found with CultureHosts Connection == 'Yes'")
 
-    # --- Top-N controls (unchanged behaviour except we apply the Culturehost filter if active) ---
+    # --- Pricing Model multi-select filter (new) ---
+    pricing_col_actual = find_col_case_insensitive(vendor_df, "Pricing Model")
+    pricing_filtered_vendor_names = None
+    pricing_selection = None
+
+    if pricing_col_actual is not None:
+        raw_vals = vendor_df[pricing_col_actual].fillna("").astype(str).map(lambda s: s.strip())
+        unique_vals = sorted([v for v in pd.unique(raw_vals) if v != ""], key=lambda s: s.lower())
+        options = ["All"] + unique_vals
+        # Use multiselect so user can pick multiple pricing models; default is "All"
+        pricing_selection_list = st.multiselect(
+            "Filter by Pricing Model (multi-select)",
+            options=options,
+            default=["All"],
+            help="Choose one or more Pricing Models to filter vendors (All = no filter)"
+        )
+
+        # interpret selection
+        if pricing_selection_list and ("All" in pricing_selection_list):
+            pricing_filtered_vendor_names = None  # All selected => no filter
+        elif pricing_selection_list:
+            # Build case-insensitive set of chosen models
+            chosen_lower = {s.strip().lower() for s in pricing_selection_list}
+            mask = raw_vals.str.lower().isin(chosen_lower)
+            pricing_filtered_vendor_names = vendor_df.loc[mask, find_col_case_insensitive(vendor_df, "vendor")].astype(str).tolist()
+            if not pricing_filtered_vendor_names:
+                st.info("No vendors match the selected Pricing Model(s).")
+        else:
+            pricing_filtered_vendor_names = None  # nothing selected => treat as no filter
+    else:
+        st.info("Note: no 'Pricing Model' column found in the vendor file — Pricing filter unavailable.")
+
+    # Compose filters: pricing + CultureHosts (intersection if both active)
+    final_filtered_vendor_names = None
+    if pricing_filtered_vendor_names is not None and filtered_vendor_names is not None:
+        final_filtered_vendor_names = list(set(pricing_filtered_vendor_names).intersection(set(filtered_vendor_names)))
+    elif pricing_filtered_vendor_names is not None:
+        final_filtered_vendor_names = pricing_filtered_vendor_names
+    elif filtered_vendor_names is not None:
+        final_filtered_vendor_names = filtered_vendor_names
+    else:
+        final_filtered_vendor_names = None
+
+    # --- Top-N controls (applies the composed filters) ---
     if summary_df.empty:
         st.info("No scored vendors to display.")
     else:
@@ -361,13 +401,9 @@ if criteria_file is not None and vendor_df is not None:
             help="Select how many top vendors to show (by Total Score (%))"
         )
 
-        # If filter is active, restrict the summary set before sorting/ranking so top-N reflects only
-        # vendors with Culturehost==Yes. Otherwise use the full summary_df.
-        if filter_ch_yes:
-            if filtered_vendor_names:
-                summary_source = summary_df[summary_df["Vendor"].isin(filtered_vendor_names)].copy()
-            else:
-                summary_source = summary_df[summary_df["Vendor"].isin([])].copy()  # empty
+        # If filters are active, restrict the summary_source first so Top-N is among the filtered set
+        if final_filtered_vendor_names is not None:
+            summary_source = summary_df[summary_df["Vendor"].isin(final_filtered_vendor_names)].copy()
         else:
             summary_source = summary_df.copy()
 
