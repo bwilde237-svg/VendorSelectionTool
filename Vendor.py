@@ -316,9 +316,9 @@ if criteria_file is not None and vendor_df is not None:
 
     st.success("✅ Scoring complete!")
 
-    # --- CultureHosts filter checkbox (user requested) ---
+    # --- Culturehost filter checkbox (user requested) ---
     # This checkbox toggles a filter: when checked, the app will restrict all outputs to vendors
-    # that have "CultureHosts Connection" == Yes (case-insensitive). It also attempts to accept
+    # that have "Culturehost Connection" == Yes (case-insensitive). It also attempts to accept
     # common true-ish values (y, true, 1).
     def find_col_case_insensitive(df, target_name):
         target_norm = normalize_case(target_name)
@@ -327,27 +327,27 @@ if criteria_file is not None and vendor_df is not None:
                 return c
         return None
 
-    filter_ch_yes = st.checkbox("Only show vendors with CultureHosts Connection == Yes", value=False, key="filter_ch_yes")
+    filter_ch_yes = st.checkbox("Only show vendors with Culturehost Connection == Yes", value=False, key="filter_ch_yes")
 
-    # compute list of vendors that match the CultureHosts Connection == yes
+    # compute list of vendors that match the Culturehost Connection == yes
     filtered_vendor_names = None
     if filter_ch_yes:
         vendor_col_actual = find_col_case_insensitive(vendor_df, "vendor")
-        ch_col_actual = find_col_case_insensitive(vendor_df, "CultureHosts Connection")
+        ch_col_actual = find_col_case_insensitive(vendor_df, "Culturehost Connection")
         if vendor_col_actual is None:
-            st.warning("Vendor file does not contain a 'Vendor' column (case-insensitive); cannot apply CultureHosts filter.")
+            st.warning("Vendor file does not contain a 'Vendor' column (case-insensitive); cannot apply Culturehost filter.")
             filtered_vendor_names = []
         elif ch_col_actual is None:
-            st.warning("Vendor file does not contain a 'CultureHosts Connection' column (case-insensitive).")
+            st.warning("Vendor file does not contain a 'Culturehost Connection' column (case-insensitive).")
             filtered_vendor_names = []
         else:
             series = vendor_df[ch_col_actual].astype(str).apply(lambda x: normalize_case(x))
             accepted_yes = {"yes", "y", "true", "1"}
             filtered_vendor_names = vendor_df.loc[series.isin(accepted_yes), vendor_col_actual].astype(str).tolist()
             if not filtered_vendor_names:
-                st.info("No vendors found with CultureHosts Connection == 'Yes'")
+                st.info("No vendors found with Culturehost Connection == 'Yes'")
 
-    # --- Top-N controls (unchanged behaviour except we apply the CultureHosts filter if active) ---
+    # --- Top-N controls (unchanged behaviour except we apply the Culturehost filter if active) ---
     if summary_df.empty:
         st.info("No scored vendors to display.")
     else:
@@ -362,7 +362,7 @@ if criteria_file is not None and vendor_df is not None:
         )
 
         # If filter is active, restrict the summary set before sorting/ranking so top-N reflects only
-        # vendors with CultureHosts==Yes. Otherwise use the full summary_df.
+        # vendors with Culturehost==Yes. Otherwise use the full summary_df.
         if filter_ch_yes:
             if filtered_vendor_names:
                 summary_source = summary_df[summary_df["Vendor"].isin(filtered_vendor_names)].copy()
