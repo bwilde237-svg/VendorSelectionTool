@@ -195,6 +195,16 @@ def calculate_scores(vendor_df, criteria_df):
 def convert_df(df):
     return df.to_csv(index=False).encode("utf-8")
 
+def hide_index_if_possible(df):
+    """
+    Return a display object that hides the DataFrame index in Streamlit.
+    Uses pandas Styler.hide_index() if available; otherwise returns the DataFrame (index will show).
+    """
+    try:
+        return df.style.hide_index()
+    except Exception:
+        return df
+
 # -------------------------------
 # STREAMLIT APP
 # -------------------------------
@@ -277,13 +287,13 @@ if criteria_file is not None and vendor_df is not None:
         top_summary_minimal.insert(0, "Rank", range(1, 1 + len(top_summary_minimal)))
 
         st.subheader(f"Top {n_top} Vendors — Overall Rankings")
-        st.dataframe(top_summary_minimal, use_container_width=True)
+        st.dataframe(hide_index_if_possible(top_summary_minimal), use_container_width=True)
 
         # Business area breakdown restricted to top N (kept separate)
         area_cols = [c for c in summary_df.columns if c not in ["Vendor", "Total Score (%)"]]
         if area_cols:
             st.subheader("Business Area Breakdown (Top selection)")
-            st.dataframe(top_summary[["Vendor"] + area_cols], use_container_width=True)
+            st.dataframe(hide_index_if_possible(top_summary[["Vendor"] + area_cols]), use_container_width=True)
 
         # Vendor multi-select for inspection (populate from Top-N)
         st.subheader("Inspect Vendor(s) Criteria (select from the Top selection)")
@@ -318,13 +328,13 @@ if criteria_file is not None and vendor_df is not None:
                     with cols_left:
                         with st.expander("Functions that Meet Criteria", expanded=True):
                             if not met_df.empty:
-                                st.dataframe(met_df, use_container_width=True)
+                                st.dataframe(hide_index_if_possible(met_df), use_container_width=True)
                             else:
                                 st.info("No functions meeting criteria for this vendor.")
                     with cols_right:
                         with st.expander("Functions that Do Not Meet Criteria", expanded=True):
                             if not not_met_df.empty:
-                                st.dataframe(not_met_df, use_container_width=True)
+                                st.dataframe(hide_index_if_possible(not_met_df), use_container_width=True)
                             else:
                                 st.info("All scored functions meet criteria for this vendor!")
 
@@ -338,8 +348,8 @@ if criteria_file is not None and vendor_df is not None:
 
         # After the inspect UI, show the Detailed Results table filtered to the Top-N selection
         st.subheader("Detailed Results (Top selection)")
-        filtered_detailed = detailed_df[detailed_df["Vendor"].isin(top_vendors)]
-        st.dataframe(filtered_detailed, use_container_width=True)
+        filtered_detailed = detailed_df[detailed_df["Vendor"].isin(top_vendors)].reset_index(drop=True)
+        st.dataframe(hide_index_if_possible(filtered_detailed), use_container_width=True)
 
         # Download buttons: full summary, full detailed, and top summary (top summary export limited to Rank+Vendor+Total Score)
         st.download_button(
