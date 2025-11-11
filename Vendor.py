@@ -202,17 +202,20 @@ def display_no_index(df, height=None):
       - Try to use pandas Styler.hide_index() and pass the Styler to st.dataframe (preferred).
       - If that's not available (older pandas), convert to records and show with st.dataframe,
         which avoids the index column by using a list-of-dicts representation.
+    Note: st.dataframe requires height to be None or an int/"auto"; we only pass height when provided.
     """
-    # make a copy and drop any existing index name to avoid an extra column header
     df_to_show = df.copy()
-    # if DataFrame has a RangeIndex starting at 0, hiding index is still desired; use styler when possible
+    # Prepare kwargs for st.dataframe, include height only if the caller provided one
+    kwargs = {"use_container_width": True}
+    if height is not None:
+        kwargs["height"] = height
+
     try:
         styler = df_to_show.style.hide_index()
-        st.dataframe(styler, use_container_width=True, height=height)
+        st.dataframe(styler, **kwargs)
     except Exception:
-        # fallback: convert to list-of-dicts which will not include the index
         records = df_to_show.to_dict(orient="records")
-        st.dataframe(pd.DataFrame.from_records(records), use_container_width=True, height=height)
+        st.dataframe(pd.DataFrame.from_records(records), **kwargs)
 
 # -------------------------------
 # STREAMLIT APP
@@ -386,3 +389,4 @@ elif criteria_file is not None and vendor_df is None:
     st.error("No vendor file available. Upload a vendor CSV (or place the vendor file next to the app with the configured filename).")
 else:
     st.info("Please upload a System Criteria CSV file to begin scoring.")
+    
