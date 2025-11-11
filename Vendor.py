@@ -316,7 +316,7 @@ if criteria_file is not None and vendor_df is not None:
 
     st.success("✅ Scoring complete!")
 
-    # --- CultureHosts filter checkbox (optional) ---
+    # --- Culturehost filter checkbox (optional) ---
     def find_col_case_insensitive(df, target_name):
         target_norm = normalize_case(target_name)
         for c in df.columns:
@@ -324,25 +324,25 @@ if criteria_file is not None and vendor_df is not None:
                 return c
         return None
 
-    filter_ch_yes = st.checkbox("Only show vendors with CultureHosts Connection == Yes", value=False, key="filter_ch_yes")
+    filter_ch_yes = st.checkbox("Only show vendors with Culturehost Connection == Yes", value=False, key="filter_ch_yes")
 
-    # compute list of vendors that match the CultureHosts Connection == yes
+    # compute list of vendors that match the CultureHost Connection == yes
     filtered_vendor_names = None
     if filter_ch_yes:
         vendor_col_actual = find_col_case_insensitive(vendor_df, "vendor")
-        ch_col_actual = find_col_case_insensitive(vendor_df, "CultureHosts Connection")
+        ch_col_actual = find_col_case_insensitive(vendor_df, "CultureHost Connection")
         if vendor_col_actual is None:
-            st.warning("Vendor file does not contain a 'Vendor' column (case-insensitive); cannot apply CultureHosts filter.")
+            st.warning("Vendor file does not contain a 'Vendor' column (case-insensitive); cannot apply CultureHost filter.")
             filtered_vendor_names = []
         elif ch_col_actual is None:
-            st.warning("Vendor file does not contain a 'CultureHosts Connection' column (case-insensitive).")
+            st.warning("Vendor file does not contain a 'CultureHost Connection' column (case-insensitive).")
             filtered_vendor_names = []
         else:
             series = vendor_df[ch_col_actual].astype(str).apply(lambda x: normalize_case(x))
             accepted_yes = {"yes", "y", "true", "1"}
             filtered_vendor_names = vendor_df.loc[series.isin(accepted_yes), vendor_col_actual].astype(str).tolist()
             if not filtered_vendor_names:
-                st.info("No vendors found with CultureHosts Connection == 'Yes'")
+                st.info("No vendors found with CultureHost Connection == 'Yes'")
 
     # --- Pricing Model multi-select filter (new) ---
     pricing_col_actual = find_col_case_insensitive(vendor_df, "Pricing Model")
@@ -376,7 +376,7 @@ if criteria_file is not None and vendor_df is not None:
     else:
         st.info("Note: no 'Pricing Model' column found in the vendor file — Pricing filter unavailable.")
 
-    # Compose filters: pricing + CultureHosts (intersection if both active)
+    # Compose filters: pricing + CultureHost (intersection if both active)
     final_filtered_vendor_names = None
     if pricing_filtered_vendor_names is not None and filtered_vendor_names is not None:
         final_filtered_vendor_names = list(set(pricing_filtered_vendor_names).intersection(set(filtered_vendor_names)))
