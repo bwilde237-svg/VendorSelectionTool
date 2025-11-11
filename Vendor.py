@@ -25,7 +25,7 @@ MEETS_THRESHOLD = 0.75  # require 75% or higher to "Meet"
 EXPECTED_CRITERIA_COLS = {"function", "requirement", "business area"}
 
 # -------------------------------
-# HELPER FUNCTIONS
+# HELPERS
 # -------------------------------
 def normalize_case(s):
     return str(s).strip().lower()
@@ -36,13 +36,6 @@ def _ensure_columns(df, expected_cols):
     return (len(missing) == 0, missing, normalized)
 
 def _detect_header_and_load_csv(file_like):
-    """Robust CSV header detection.
-
-    Reads the uploaded CSV and searches the first several rows for a row that
-    contains the expected header names (Function, Requirement, Business Area).
-    If found, re-reads the CSV using that row as the header.
-    """
-    # Try a simple read first
     try:
         file_like.seek(0)
         df = pd.read_csv(file_like)
@@ -52,7 +45,6 @@ def _detect_header_and_load_csv(file_like):
     except Exception:
         file_like.seek(0)
 
-    # Read without header to inspect the top rows
     try:
         file_like.seek(0)
         raw = pd.read_csv(file_like, header=None, dtype=str, keep_default_na=False)
@@ -89,13 +81,11 @@ def _detect_header_and_load_csv(file_like):
                 "and that the header row appears within the top 20 rows."
             )
 
-    # Re-read using the located header row
     file_like.seek(0)
     df = pd.read_csv(file_like, header=header_row_index)
     return df
 
 def load_criteria_file(uploaded_file):
-    """Load criteria CSV/XLSX robustly."""
     name = getattr(uploaded_file, "name", "")
     uploaded_file.seek(0)
     if name.lower().endswith((".xls", ".xlsx")):
@@ -195,27 +185,58 @@ def calculate_scores(vendor_df, criteria_df):
 def convert_df(df):
     return df.to_csv(index=False).encode("utf-8")
 
-def display_no_index(df, height=None):
+# New: robust display helper that removes a leading index-like column (if present)
+def display_no_left_index_col(df, height=None):
     """
-    Display DataFrame in Streamlit without showing the left-hand index column.
-    Strategy:
-      - Try to use pandas Styler.hide_index() and pass the Styler to st.dataframe (preferred).
-      - If that's not available (older pandas), convert to records and show with st.dataframe,
-        which avoids the index column by using a list-of-dicts representation.
-    Note: st.dataframe requires height to be None or an int/"auto"; we only pass height when provided.
+    Display DataFrame in Streamlit while ensuring the left-most "index-like" column is removed.
+    Rules to drop the first column:
+      - first column name looks like '', 'unnamed: 0', 'index' (case-insensitive), OR
+      - first column values are exactly [0,1,2,...,n-1] (string or int)
+    This handles cases where input CSVs contain an exported index column named 'Unnamed: 0' or similar.
     """
-    df_to_show = df.copy()
-    # Prepare kwargs for st.dataframe, include height only if the caller provided one
+    if df is None:
+        return
+
+    df2 = df.copy()
+    # normalize index (so index values don't become a column)
+    df2 = df2.reset_index(drop=True)
+
+    # If there is nothing to show, just display empty
+    if df2.shape[1] == 0:
+        st.dataframe(df2, use_container_width=True, height=height)
+        return
+
+    first_col_name = str(df2.columns[0]).strip().lower()
+    first_col_vals = df2.iloc[:, 0].tolist()
+
+    # check name-based heuristics
+    name_flag = first_col_name in ["", "unnamed: 0", "unnamed:0", "unnamed", "index"]
+
+    # check value-based heuristic: sequence 0..n-1 (as ints or strings)
+    seq_flag = False
+    try:
+        n = len(first_col_vals)
+        # create sequences as strings and ints for tolerant comparison
+        seq_strs = [str(i) for i in range(n)]
+        seq_ints = list(range(n))
+        if [str(v) for v in first_col_vals] == seq_strs or first_col_vals == seq_ints:
+            seq_flag = True
+    except Exception:
+        seq_flag = False
+
+    if name_flag or seq_flag:
+        # drop the first column
+        df2 = df2.iloc[:, 1:]
+
+    # Finally, to avoid Streamlit rendering an extra index column in some environments,
+    # convert to records and re-create a DataFrame (this removes any index-like structure).
+    df_to_show = pd.DataFrame.from_records(df2.to_dict(orient="records"))
+
+    # display (only pass height when provided)
     kwargs = {"use_container_width": True}
     if height is not None:
         kwargs["height"] = height
-
-    try:
-        styler = df_to_show.style.hide_index()
-        st.dataframe(styler, **kwargs)
-    except Exception:
-        records = df_to_show.to_dict(orient="records")
-        st.dataframe(pd.DataFrame.from_records(records), **kwargs)
+    st.dataframe(df_to_show, **kwargs)
 
 # -------------------------------
 # STREAMLIT APP
@@ -275,7 +296,6 @@ if criteria_file is not None and vendor_df is not None:
 
     st.success("✅ Scoring complete!")
 
-    # Allow the user to choose how many top vendors to display (default 5).
     if summary_df.empty:
         st.info("No scored vendors to display.")
     else:
@@ -289,25 +309,22 @@ if criteria_file is not None and vendor_df is not None:
             help="Select how many top vendors to show (by Total Score (%))"
         )
 
-        # Top N sorted summary
         top_summary = summary_df.sort_values("Total Score (%)", ascending=False).head(n_top)
 
-        # Show only Vendor and Total Score (%) in the Top-N table (user requested),
-        # and add a Rank column (1-based).
-        top_summary_minimal = top_summary[["Vendor", "Total Score (%)"]].copy()
-        top_summary_minimal = top_summary_minimal.reset_index(drop=True)
+        # minimal top summary (Rank + Vendor + Total Score)
+        top_summary_minimal = top_summary[["Vendor", "Total Score (%)"]].copy().reset_index(drop=True)
         top_summary_minimal.insert(0, "Rank", range(1, 1 + len(top_summary_minimal)))
 
         st.subheader(f"Top {n_top} Vendors — Overall Rankings")
-        display_no_index(top_summary_minimal)
+        display_no_left_index_col(top_summary_minimal)
 
-        # Business area breakdown restricted to top N (kept separate)
+        # Business area breakdown restricted to top N
         area_cols = [c for c in summary_df.columns if c not in ["Vendor", "Total Score (%)"]]
         if area_cols:
             st.subheader("Business Area Breakdown (Top selection)")
-            display_no_index(top_summary[["Vendor"] + area_cols])
+            display_no_left_index_col(top_summary[["Vendor"] + area_cols])
 
-        # Vendor multi-select for inspection (populate from Top-N)
+        # Vendor multi-select (from Top-N)
         st.subheader("Inspect Vendor(s) Criteria (select from the Top selection)")
         top_vendors = top_summary["Vendor"].tolist()
         vendor_select = st.multiselect(
@@ -320,7 +337,6 @@ if criteria_file is not None and vendor_df is not None:
         if not vendor_select:
             st.info("Select at least one vendor to inspect their criteria.")
         else:
-            # Create a tab per selected vendor so you can compare quickly
             tabs = st.tabs(vendor_select)
             for tab_label, tab in zip(vendor_select, tabs):
                 with tab:
@@ -340,17 +356,16 @@ if criteria_file is not None and vendor_df is not None:
                     with cols_left:
                         with st.expander("Functions that Meet Criteria", expanded=True):
                             if not met_df.empty:
-                                display_no_index(met_df)
+                                display_no_left_index_col(met_df)
                             else:
                                 st.info("No functions meeting criteria for this vendor.")
                     with cols_right:
                         with st.expander("Functions that Do Not Meet Criteria", expanded=True):
                             if not not_met_df.empty:
-                                display_no_index(not_met_df)
+                                display_no_left_index_col(not_met_df)
                             else:
                                 st.info("All scored functions meet criteria for this vendor!")
 
-                    # Download selected vendor's detailed rows
                     st.download_button(
                         label=f"⬇️ Download {tab_label} Detailed CSV",
                         data=convert_df(vendor_rows),
@@ -358,12 +373,12 @@ if criteria_file is not None and vendor_df is not None:
                         mime="text/csv"
                     )
 
-        # After the inspect UI, show the Detailed Results table filtered to the Top-N selection
+        # Detailed Results (Top selection) - placed after inspect UI
         st.subheader("Detailed Results (Top selection)")
         filtered_detailed = detailed_df[detailed_df["Vendor"].isin(top_vendors)].reset_index(drop=True)
-        display_no_index(filtered_detailed, height=500)
+        display_no_left_index_col(filtered_detailed, height=500)
 
-        # Download buttons: full summary, full detailed, and top summary (top summary export limited to Rank+Vendor+Total Score)
+        # Download buttons
         st.download_button(
             label="⬇️ Download Full Summary CSV",
             data=convert_df(summary_df),
@@ -389,4 +404,3 @@ elif criteria_file is not None and vendor_df is None:
     st.error("No vendor file available. Upload a vendor CSV (or place the vendor file next to the app with the configured filename).")
 else:
     st.info("Please upload a System Criteria CSV file to begin scoring.")
-    
