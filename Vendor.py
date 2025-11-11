@@ -195,15 +195,24 @@ def calculate_scores(vendor_df, criteria_df):
 def convert_df(df):
     return df.to_csv(index=False).encode("utf-8")
 
-def hide_index_if_possible(df):
+def display_no_index(df, height=None):
     """
-    Return a display object that hides the DataFrame index in Streamlit.
-    Uses pandas Styler.hide_index() if available; otherwise returns the DataFrame (index will show).
+    Display DataFrame in Streamlit without showing the left-hand index column.
+    Strategy:
+      - Try to use pandas Styler.hide_index() and pass the Styler to st.dataframe (preferred).
+      - If that's not available (older pandas), convert to records and show with st.dataframe,
+        which avoids the index column by using a list-of-dicts representation.
     """
+    # make a copy and drop any existing index name to avoid an extra column header
+    df_to_show = df.copy()
+    # if DataFrame has a RangeIndex starting at 0, hiding index is still desired; use styler when possible
     try:
-        return df.style.hide_index()
+        styler = df_to_show.style.hide_index()
+        st.dataframe(styler, use_container_width=True, height=height)
     except Exception:
-        return df
+        # fallback: convert to list-of-dicts which will not include the index
+        records = df_to_show.to_dict(orient="records")
+        st.dataframe(pd.DataFrame.from_records(records), use_container_width=True, height=height)
 
 # -------------------------------
 # STREAMLIT APP
@@ -287,13 +296,13 @@ if criteria_file is not None and vendor_df is not None:
         top_summary_minimal.insert(0, "Rank", range(1, 1 + len(top_summary_minimal)))
 
         st.subheader(f"Top {n_top} Vendors — Overall Rankings")
-        st.dataframe(hide_index_if_possible(top_summary_minimal), use_container_width=True)
+        display_no_index(top_summary_minimal)
 
         # Business area breakdown restricted to top N (kept separate)
         area_cols = [c for c in summary_df.columns if c not in ["Vendor", "Total Score (%)"]]
         if area_cols:
             st.subheader("Business Area Breakdown (Top selection)")
-            st.dataframe(hide_index_if_possible(top_summary[["Vendor"] + area_cols]), use_container_width=True)
+            display_no_index(top_summary[["Vendor"] + area_cols])
 
         # Vendor multi-select for inspection (populate from Top-N)
         st.subheader("Inspect Vendor(s) Criteria (select from the Top selection)")
@@ -328,13 +337,13 @@ if criteria_file is not None and vendor_df is not None:
                     with cols_left:
                         with st.expander("Functions that Meet Criteria", expanded=True):
                             if not met_df.empty:
-                                st.dataframe(hide_index_if_possible(met_df), use_container_width=True)
+                                display_no_index(met_df)
                             else:
                                 st.info("No functions meeting criteria for this vendor.")
                     with cols_right:
                         with st.expander("Functions that Do Not Meet Criteria", expanded=True):
                             if not not_met_df.empty:
-                                st.dataframe(hide_index_if_possible(not_met_df), use_container_width=True)
+                                display_no_index(not_met_df)
                             else:
                                 st.info("All scored functions meet criteria for this vendor!")
 
@@ -349,7 +358,7 @@ if criteria_file is not None and vendor_df is not None:
         # After the inspect UI, show the Detailed Results table filtered to the Top-N selection
         st.subheader("Detailed Results (Top selection)")
         filtered_detailed = detailed_df[detailed_df["Vendor"].isin(top_vendors)].reset_index(drop=True)
-        st.dataframe(hide_index_if_possible(filtered_detailed), use_container_width=True)
+        display_no_index(filtered_detailed, height=500)
 
         # Download buttons: full summary, full detailed, and top summary (top summary export limited to Rank+Vendor+Total Score)
         st.download_button(
