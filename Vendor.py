@@ -375,7 +375,53 @@ if criteria_file is not None and vendor_df is not None:
             pricing_filtered_vendor_names = None  # nothing selected => treat as no filter
     else:
         st.info("Note: no 'Pricing Model' column found in the vendor file — Pricing filter unavailable.")
+    # --- Mandatory Functionality Filter (NEW) ---
+    st.subheader("Filter by Mandatory Functionality")
 
+    # Extract list of functions from criteria_df
+    # Only include functions that actually appear in the vendor file
+    vendor_function_cols = [normalize_case(c) for c in vendor_df.columns if c.lower() != "vendor"]
+    criteria_functions = [
+        f for f in criteria_df["function"].astype(str).map(normalize_case).tolist()
+        if f in vendor_function_cols
+    ]
+    criteria_functions = sorted(set(criteria_functions))
+
+    mandatory_selection = st.multiselect(
+        "Select mandatory function(s) the vendor MUST support",
+        options=criteria_functions,
+        help="Only vendors answering 'Yes' for ALL selected functions will be included."
+    )
+
+    mandatory_filtered_vendor_names = None
+    if mandatory_selection:
+        vendor_col_actual = find_col_case_insensitive(vendor_df, "vendor")
+
+        # Collect normalized function names → match vendor_df columns
+        selected_funcs = set(mandatory_selection)
+
+        # Filter vendors: all selected functions must equal 'yes'
+        accepted_yes = {"yes", "y", "true", "1"}
+        mask = pd.Series(True, index=vendor_df.index)
+
+        for func in selected_funcs:
+            # Find the actual column name in vendor_df
+            actual_func_col = None
+            for c in vendor_df.columns:
+                if normalize_case(c) == func:
+                    actual_func_col = c
+                    break
+
+            if actual_func_col is None:
+                continue  # shouldn't happen, but fail gracefully
+
+            mask = mask & vendor_df[actual_func_col].astype(str).str.lower().isin(accepted_yes)
+
+        mandatory_filtered_vendor_names = vendor_df.loc[mask, vendor_col_actual].astype(str).tolist()
+
+        if not mandatory_filtered_vendor_names:
+            st.info("No vendors meet ALL of the selected mandatory functionality requirements.")
+            
     # Compose filters: pricing + CultureHost (intersection if both active)
     final_filtered_vendor_names = None
     if pricing_filtered_vendor_names is not None and filtered_vendor_names is not None:
