@@ -101,6 +101,7 @@ def load_criteria_file(uploaded_file):
     return df
 
 def _canonical_requirement_key(req_text: str) -> str:
+    """Map a free-text Requirement cell to one of the canonical keys in REQUIREMENT_WEIGHTS."""
     if req_text is None:
         return ""
     req_norm = normalize_case(req_text)
@@ -112,14 +113,17 @@ def _canonical_requirement_key(req_text: str) -> str:
     return ""
 
 def _interpret_response(resp_raw: object) -> (float, str):
+    """Interpret many variants of Yes/No/Partial/Not provided and return (score, canonical_string)."""
     if pd.isna(resp_raw):
         return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
 
     s = normalize_case(resp_raw)
+    # common yes variants
     yes_vals = {"yes", "y", "true", "1", "available", "supported"}
     if s in yes_vals:
         return RESPONSE_SCORES.get("yes", 1), "yes"
 
+    # common 'not provided' / partial variants
     not_provided_vals = {"not provided", "n/a", "na", "-", "none", "unknown", "no response"}
     partial_vals = {"partial", "partially", "limited", "some", "sometimes", "conditional"}
     if s in not_provided_vals:
@@ -127,10 +131,12 @@ def _interpret_response(resp_raw: object) -> (float, str):
     if s in partial_vals:
         return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
 
+    # common no variants
     no_vals = {"no", "n", "false", "0", "not supported", "not available"}
     if s in no_vals:
         return RESPONSE_SCORES.get("no", 0), "no"
 
+    # If it looks numeric (0..1) interpret
     try:
         f = float(s)
         f = max(0.0, min(1.0, f))
@@ -140,13 +146,24 @@ def _interpret_response(resp_raw: object) -> (float, str):
             return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
         return 0.0, "no"
     except Exception:
+        # Unknown free text: treat as not provided to be generous
         return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
 
 def calculate_scores(vendor_df, criteria_df):
+    """
+    Robust scoring:
+    - Matches vendor columns case-insensitively (preserves original column names for display)
+    - Iterates criteria rows, so duplicate Function rows are handled
+    - Maps requirement text to canonical weights via keyword matching
+    - Interprets many response synonyms
+    """
     vendor_df = vendor_df.copy()
     criteria_df = criteria_df.copy()
+
+    # Build normalized->actual column name map for vendor file
     vendor_col_map = {normalize_case(c): c for c in vendor_df.columns}
 
+    # Ensure criteria has required columns (case-insensitive)
     ok, missing, crit_map = _ensure_columns(criteria_df, EXPECTED_CRITERIA_COLS)
     if not ok:
         raise ValueError(
@@ -154,6 +171,7 @@ def calculate_scores(vendor_df, criteria_df):
             f"Found columns: {list(criteria_df.columns)}"
         )
 
+    # Find the actual vendor column name in vendor_df (case-insensitive)
     vendor_col_actual = None
     for c in vendor_df.columns:
         if normalize_case(c) == "vendor":
@@ -164,30 +182,38 @@ def calculate_scores(vendor_df, criteria_df):
             f"Vendor file must include a 'Vendor' column (case-insensitive). Found columns: {list(vendor_df.columns)}"
         )
 
+    # Prepare per-vendor accumulators
     vendor_scores_acc = {str(v): {"score": 0.0, "weight": 0.0, "areas": {}} for v in vendor_df[vendor_col_actual].astype(str).tolist()}
     detailed_records = []
 
+    # Iterate criteria rows (supports multiple rows with same Function)
     for _, crit in criteria_df.iterrows():
         func_orig = crit[crit_map["function"]]
         req_orig = crit[crit_map["requirement"]]
         area_orig = crit[crit_map["business area"]]
 
         func_norm = normalize_case(func_orig)
+        # find matching vendor column (case-insensitive)
         vendor_col_for_func = vendor_col_map.get(func_norm)
         if not vendor_col_for_func:
+            # no column in vendor file matching this function; skip
             continue
 
+        # Determine weight (canonicalize requirement text)
         req_key = _canonical_requirement_key(req_orig)
         weight = REQUIREMENT_WEIGHTS.get(req_key, 0)
         if weight == 0:
+            # either explicitly 'not required' or unknown -> skip scoring
             continue
 
+        # For each vendor, inspect their response in this function column
         for idx, vendor_row in vendor_df.iterrows():
             vendor_name = str(vendor_row[vendor_col_actual])
             raw_resp = vendor_row.get(vendor_col_for_func, "")
             resp_score, resp_canon = _interpret_response(raw_resp)
             weighted_score = resp_score * weight
 
+            # accumulate
             vacc = vendor_scores_acc.setdefault(vendor_name, {"score": 0.0, "weight": 0.0, "areas": {}})
             vacc["score"] += weighted_score
             vacc["weight"] += weight
@@ -210,10 +236,12 @@ def calculate_scores(vendor_df, criteria_df):
                 "Meets Criteria": meets
             })
 
+    # Build summary dataframe
     summary_rows = []
     for vendor_name, vals in vendor_scores_acc.items():
         total_pct = round((vals["score"] / vals["weight"]) * 100 if vals["weight"] > 0 else 0, 2)
         row = {"Vendor": vendor_name, "Total Score (%)": total_pct}
+        # add area breakdown
         for area, sub in vals["areas"].items():
             area_pct = round((sub["score"] / sub["weight"]) * 100 if sub["weight"] > 0 else 0, 2)
             row[f"{area} (%)"] = area_pct
@@ -222,6 +250,7 @@ def calculate_scores(vendor_df, criteria_df):
     summary_df = pd.DataFrame(summary_rows)
     detailed_df = pd.DataFrame(detailed_records)
 
+    # Ensure consistent column ordering (Vendor first)
     if not summary_df.empty:
         cols = [c for c in summary_df.columns if c != "Vendor"]
         summary_df = summary_df[["Vendor"] + cols]
@@ -396,6 +425,7 @@ if criteria_file is not None and vendor_df is not None:
         raw_vals = vendor_df[pricing_col_actual].fillna("").astype(str).map(lambda s: s.strip())
         unique_vals = sorted([v for v in pd.unique(raw_vals) if v != ""], key=lambda s: s.lower())
         options = ["All"] + unique_vals
+        # Use multiselect so user can pick multiple pricing models; default is "All"
         pricing_selection_list = st.multiselect(
             "Filter by Pricing Model (multi-select)",
             options=options,
@@ -403,48 +433,51 @@ if criteria_file is not None and vendor_df is not None:
             help="Choose one or more Pricing Models to filter vendors (All = no filter)"
         )
 
+        # interpret selection
         if pricing_selection_list and ("All" in pricing_selection_list):
-            pricing_filtered_vendor_names = None
+            pricing_filtered_vendor_names = None  # All selected => no filter
         elif pricing_selection_list:
+            # Build case-insensitive set of chosen models
             chosen_lower = {s.strip().lower() for s in pricing_selection_list}
             mask = raw_vals.str.lower().isin(chosen_lower)
             pricing_filtered_vendor_names = vendor_df.loc[mask, find_col_case_insensitive(vendor_df, "vendor")].astype(str).tolist()
             if not pricing_filtered_vendor_names:
                 st.info("No vendors match the selected Pricing Model(s).")
         else:
-            pricing_filtered_vendor_names = None
+            pricing_filtered_vendor_names = None  # nothing selected => treat as no filter
     else:
         st.info("Note: no 'Pricing Model' column found in the vendor file — Pricing filter unavailable.")
 
-    # --- Functionality requirement filter (new) ---
-    # Allow user to require that vendors have specific function(s) (meet criteria)
+    # --- Functionality requirement filter (STRICT only) ---
+    # Allow user to require that vendors have specific function(s) (meet criteria).
+    # This is always STRICT: for each selected function, all matching criteria rows must be "Meets Criteria".
     function_filtered_vendor_names = None
     if not detailed_df.empty:
         available_functions = sorted(pd.unique(detailed_df["Function"].astype(str)))
         st.markdown("---")
-        st.write("Functionality requirement filter — require vendors to have selected functions.")
+        st.write("Functionality requirement filter — require vendors to meet ALL matching criteria rows for each selected function (STRICT).")
         func_selection = st.multiselect(
-            "Select functions that vendors must satisfy (vendors must meet all selected functions)",
+            "Select functions that vendors must satisfy (vendors must meet ALL matching criteria rows for each selected function)",
             options=available_functions,
             default=[],
-            help="Pick one or more functions. Only vendors that meet each selected function will be shown."
+            help="Pick one or more functions. Only vendors that meet all matching criteria rows for each selected function will be shown."
         )
+        if func_selection:
             # Pre-compute vendor x function meet stats from detailed_df
-            # group by Vendor and Function
             grp = detailed_df.groupby(["Vendor", "Function"])["Meets Criteria"].apply(list).reset_index()
-            # Build maps vendor->function->(any_meet, all_meet)
+            # Build maps vendor->function->all_meet
             vendor_func_ok = {}
             for _, r in grp.iterrows():
                 v = r["Vendor"]
                 f = r["Function"]
                 meets_list = [str(x) for x in r["Meets Criteria"]]
-                any_meet = any(x == "Meets Criteria" for x in meets_list)
                 all_meet = all(x == "Meets Criteria" for x in meets_list)
-                vendor_func_ok.setdefault(v, {})[f] = {"any": any_meet, "all": all_meet}
+                vendor_func_ok.setdefault(v, {})[f] = {"all": all_meet}
 
-            # Evaluate vendors
+            # Evaluate vendors (STRICT: require all matching rows to be Meets Criteria)
             selected_vendors = []
-            for v in vendor_df[find_col_case_insensitive(vendor_df, "vendor")].astype(str).tolist():
+            vendor_name_col = find_col_case_insensitive(vendor_df, "vendor")
+            for v in vendor_df[vendor_name_col].astype(str).tolist():
                 ok_vendor = True
                 for f in func_selection:
                     vmap = vendor_func_ok.get(v, {})
@@ -453,14 +486,9 @@ if criteria_file is not None and vendor_df is not None:
                         # vendor has no rows for this function -> fail
                         ok_vendor = False
                         break
-                    if mode.startswith("At least one"):
-                        if not stat["any"]:
-                            ok_vendor = False
-                            break
-                    else:
-                        if not stat["all"]:
-                            ok_vendor = False
-                            break
+                    if not stat["all"]:
+                        ok_vendor = False
+                        break
                 if ok_vendor:
                     selected_vendors.append(v)
             function_filtered_vendor_names = selected_vendors
@@ -470,7 +498,6 @@ if criteria_file is not None and vendor_df is not None:
 
     # Compose filters: pricing + CultureHost + function (intersection if multiple active)
     final_filtered_vendor_names = None
-    active_filters = []
     filters_lists = []
     if pricing_filtered_vendor_names is not None:
         filters_lists.append(set(pricing_filtered_vendor_names))
