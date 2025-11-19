@@ -455,7 +455,7 @@ if criteria_file is not None and vendor_df is not None:
     if not detailed_df.empty:
         available_functions = sorted(pd.unique(detailed_df["Function"].astype(str)))
         st.markdown("---")
-        st.write("Functionality requirement filter — require vendors to meet ALL matching criteria rows for each selected function (STRICT).")
+        st.write("Functionality requirement filter — require vendors to meet ALL matching criteria rows for each selected function")
         func_selection = st.multiselect(
             "Select functions that vendors must satisfy (vendors must meet ALL matching criteria rows for each selected function)",
             options=available_functions,
