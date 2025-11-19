@@ -422,23 +422,13 @@ if criteria_file is not None and vendor_df is not None:
     if not detailed_df.empty:
         available_functions = sorted(pd.unique(detailed_df["Function"].astype(str)))
         st.markdown("---")
-        st.write("Functionality requirement filter — require vendors to have (meet) selected functions.")
+        st.write("Functionality requirement filter — require vendors to have selected functions.")
         func_selection = st.multiselect(
             "Select functions that vendors must satisfy (vendors must meet all selected functions)",
             options=available_functions,
             default=[],
             help="Pick one or more functions. Only vendors that meet each selected function will be shown."
         )
-        if func_selection:
-            # Let user choose whether to require 'at least one criteria row' or 'all criteria rows' for the function
-            mode = st.radio(
-                "For each selected function, require:",
-                options=[
-                    "At least one matching criteria row to be 'Meets Criteria' (lenient)",
-                    "All matching criteria rows must be 'Meets Criteria' (strict)"
-                ],
-                index=0
-            )
             # Pre-compute vendor x function meet stats from detailed_df
             # group by Vendor and Function
             grp = detailed_df.groupby(["Vendor", "Function"])["Meets Criteria"].apply(list).reset_index()
