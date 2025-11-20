@@ -31,6 +31,13 @@ EXPECTED_CRITERIA_COLS = {"function", "requirement", "business area"}
 def normalize_case(s):
     return str(s).strip().lower()
 
+def find_col_case_insensitive(df, target_name):
+    target_norm = normalize_case(target_name)
+    for c in df.columns:
+        if normalize_case(c) == target_norm:
+            return c
+    return None
+
 def _ensure_columns(df, expected_cols):
     normalized = {normalize_case(c): c for c in df.columns}
     missing = [c for c in expected_cols if c not in normalized]
@@ -113,57 +120,75 @@ def _canonical_requirement_key(req_text: str) -> str:
     return ""
 
 def _interpret_response(resp_raw: object) -> (float, str):
-    """Interpret many variants of Yes/No/Partial/Not provided and return (score, canonical_string)."""
+    """
+    Interpret many variants of Yes/No/Partial/Not provided and return (score, canonical_string).
+
+    - Accepts substring matches so "Yes - via API" or "Included" are recognized.
+    - Parses percent strings like "75%" or numeric values.
+    - Falls back to 'not provided' (0.5) for unknown free text.
+    """
     if pd.isna(resp_raw):
         return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
 
-    s = normalize_case(resp_raw)
-    # common yes variants
-    yes_vals = {"yes", "y", "true", "1", "available", "supported"}
-    if s in yes_vals:
-        return RESPONSE_SCORES.get("yes", 1), "yes"
+    s = normalize_case(resp_raw).strip()
 
-    # common 'not provided' / partial variants
-    not_provided_vals = {"not provided", "n/a", "na", "-", "none", "unknown", "no response"}
-    partial_vals = {"partial", "partially", "limited", "some", "sometimes", "conditional"}
-    if s in not_provided_vals:
-        return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
-    if s in partial_vals:
-        return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
-
-    # common no variants
-    no_vals = {"no", "n", "false", "0", "not supported", "not available"}
-    if s in no_vals:
-        return RESPONSE_SCORES.get("no", 0), "no"
-
-    # If it looks numeric (0..1) interpret
+    # Numeric / percentage handling
     try:
-        f = float(s)
-        f = max(0.0, min(1.0, f))
-        if f >= 0.75:
+        if isinstance(resp_raw, str) and "%" in resp_raw:
+            num = float(resp_raw.replace("%", "").strip())
+            val = max(0.0, min(1.0, num / 100.0))
+            if val >= 0.75:
+                return 1.0, "yes"
+            if val >= 0.5:
+                return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
+            return 0.0, "no"
+        num = float(s)
+        if num > 1.0:
+            val = max(0.0, min(1.0, num / 100.0))
+        else:
+            val = max(0.0, min(1.0, num))
+        if val >= 0.75:
             return 1.0, "yes"
-        if f >= 0.5:
+        if val >= 0.5:
             return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
         return 0.0, "no"
     except Exception:
-        # Unknown free text: treat as not provided to be generous
-        return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
+        pass
+
+    yes_keywords = ["yes", "y", "true", "1", "available", "supported", "included", "included in", "included:"]
+    not_provided_keywords = ["not provided", "n/a", "na", "-", "none", "unknown", "no response", "tbd", "tbc", "not stated"]
+    partial_keywords = ["partial", "partially", "limited", "some", "sometimes", "conditional", "part"]
+    no_keywords = ["no", "n", "false", "0", "not supported", "not available", "nope"]
+
+    for kw in yes_keywords:
+        if kw in s:
+            return RESPONSE_SCORES.get("yes", 1), "yes"
+    for kw in not_provided_keywords:
+        if kw in s:
+            return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
+    for kw in partial_keywords:
+        if kw in s:
+            return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
+    for kw in no_keywords:
+        if kw in s:
+            return RESPONSE_SCORES.get("no", 0), "no"
+
+    return RESPONSE_SCORES.get("not provided", 0.5), "not provided"
 
 def calculate_scores(vendor_df, criteria_df):
     """
-    Robust scoring:
-    - Matches vendor columns case-insensitively (preserves original column names for display)
-    - Iterates criteria rows, so duplicate Function rows are handled
-    - Maps requirement text to canonical weights via keyword matching
-    - Interprets many response synonyms
+    Scoring logic. IMPORTANT: the 'Pricing Model' column is excluded from scoring (used only for filtering).
     """
     vendor_df = vendor_df.copy()
     criteria_df = criteria_df.copy()
 
-    # Build normalized->actual column name map for vendor file
-    vendor_col_map = {normalize_case(c): c for c in vendor_df.columns}
+    # Build normalized->actual column name map for vendor file excluding Pricing Model
+    vendor_col_map = {
+        normalize_case(c): c
+        for c in vendor_df.columns
+        if normalize_case(c) != "pricing model"
+    }
 
-    # Ensure criteria has required columns (case-insensitive)
     ok, missing, crit_map = _ensure_columns(criteria_df, EXPECTED_CRITERIA_COLS)
     if not ok:
         raise ValueError(
@@ -171,7 +196,6 @@ def calculate_scores(vendor_df, criteria_df):
             f"Found columns: {list(criteria_df.columns)}"
         )
 
-    # Find the actual vendor column name in vendor_df (case-insensitive)
     vendor_col_actual = None
     for c in vendor_df.columns:
         if normalize_case(c) == "vendor":
@@ -182,7 +206,6 @@ def calculate_scores(vendor_df, criteria_df):
             f"Vendor file must include a 'Vendor' column (case-insensitive). Found columns: {list(vendor_df.columns)}"
         )
 
-    # Prepare per-vendor accumulators
     vendor_scores_acc = {str(v): {"score": 0.0, "weight": 0.0, "areas": {}} for v in vendor_df[vendor_col_actual].astype(str).tolist()}
     detailed_records = []
 
@@ -193,27 +216,25 @@ def calculate_scores(vendor_df, criteria_df):
         area_orig = crit[crit_map["business area"]]
 
         func_norm = normalize_case(func_orig)
-        # find matching vendor column (case-insensitive)
-        vendor_col_for_func = vendor_col_map.get(func_norm)
-        if not vendor_col_for_func:
-            # no column in vendor file matching this function; skip
+        if func_norm == "pricing model":
+            # explicitly ignore pricing model as a function for scoring
             continue
 
-        # Determine weight (canonicalize requirement text)
+        vendor_col_for_func = vendor_col_map.get(func_norm)
+        if not vendor_col_for_func:
+            continue
+
         req_key = _canonical_requirement_key(req_orig)
         weight = REQUIREMENT_WEIGHTS.get(req_key, 0)
         if weight == 0:
-            # either explicitly 'not required' or unknown -> skip scoring
             continue
 
-        # For each vendor, inspect their response in this function column
         for idx, vendor_row in vendor_df.iterrows():
             vendor_name = str(vendor_row[vendor_col_actual])
             raw_resp = vendor_row.get(vendor_col_for_func, "")
             resp_score, resp_canon = _interpret_response(raw_resp)
             weighted_score = resp_score * weight
 
-            # accumulate
             vacc = vendor_scores_acc.setdefault(vendor_name, {"score": 0.0, "weight": 0.0, "areas": {}})
             vacc["score"] += weighted_score
             vacc["weight"] += weight
@@ -236,12 +257,10 @@ def calculate_scores(vendor_df, criteria_df):
                 "Meets Criteria": meets
             })
 
-    # Build summary dataframe
     summary_rows = []
     for vendor_name, vals in vendor_scores_acc.items():
         total_pct = round((vals["score"] / vals["weight"]) * 100 if vals["weight"] > 0 else 0, 2)
         row = {"Vendor": vendor_name, "Total Score (%)": total_pct}
-        # add area breakdown
         for area, sub in vals["areas"].items():
             area_pct = round((sub["score"] / sub["weight"]) * 100 if sub["weight"] > 0 else 0, 2)
             row[f"{area} (%)"] = area_pct
@@ -250,7 +269,6 @@ def calculate_scores(vendor_df, criteria_df):
     summary_df = pd.DataFrame(summary_rows)
     detailed_df = pd.DataFrame(detailed_records)
 
-    # Ensure consistent column ordering (Vendor first)
     if not summary_df.empty:
         cols = [c for c in summary_df.columns if c != "Vendor"]
         summary_df = summary_df[["Vendor"] + cols]
@@ -296,7 +314,7 @@ def display_df_no_index(df: pd.DataFrame, height: int | None = None):
     except Exception:
         pass
 
-    # Render as HTML with CSS that respects light/dark (stronger colors)
+    # Render as HTML with CSS that respects light/dark
     try:
         html_table = df2.to_html(index=False, border=0, classes="mytable")
         css = """
@@ -342,6 +360,18 @@ st.markdown(
     "If your CSV has extra header rows (e.g., a title row) the app will try to auto-detect the real header."
 )
 
+# Initialize session state defaults for filters
+if "filter_ch_yes" not in st.session_state:
+    st.session_state["filter_ch_yes"] = False
+if "pricing_selection_list" not in st.session_state:
+    st.session_state["pricing_selection_list"] = ["All"]
+if "pricing_selection_list_display" not in st.session_state:
+    st.session_state["pricing_selection_list_display"] = ["All"]
+if "func_selection" not in st.session_state:
+    st.session_state["func_selection"] = []
+if "top_n" not in st.session_state:
+    st.session_state["top_n"] = 5
+
 # Load fixed vendor file if present
 vendor_df = None
 if os.path.exists(VENDOR_FILE):
@@ -372,6 +402,90 @@ if vendor_df is None:
 
 criteria_file = st.file_uploader("Upload your System Criteria CSV", type=["csv", "xlsx", "xls"], key="criteria_upload")
 
+# -------------------------------
+# Sidebar filters (reordered & separated)
+# Order: Top-N slider -> Pricing Model -> Mandatory Functionality -> CultureHost
+# -------------------------------
+with st.sidebar:
+    st.header("Filters & Controls")
+
+    if st.button("Reset filters to defaults"):
+        st.session_state["filter_ch_yes"] = False
+        st.session_state["pricing_selection_list"] = ["All"]
+        st.session_state["pricing_selection_list_display"] = ["All"]
+        st.session_state["func_selection"] = []
+        st.session_state["top_n"] = 5
+        if "_pricing_display_map" in st.session_state:
+            del st.session_state["_pricing_display_map"]
+        st.experimental_rerun()
+
+    st.markdown("---")
+    # Top-N slider at top of sidebar
+    st.slider(
+        "Number of vendors to display",
+        min_value=1,
+        max_value=100,
+        value=st.session_state.get("top_n", 5),
+        key="top_n",
+        help="How many top vendors to show (applies after scoring and filtering)."
+    )
+
+    st.markdown("---")
+    # Pricing Model filter next
+    st.write("Pricing Model filter")
+    if vendor_df is not None:
+        pricing_col_actual = find_col_case_insensitive(vendor_df, "Pricing Model")
+        if pricing_col_actual is not None:
+            raw_vals = vendor_df[pricing_col_actual].fillna("").astype(str).map(lambda s: s.strip())
+            counts = raw_vals.str.lower().value_counts().to_dict()
+            unique_vals = sorted([v for v in pd.unique(raw_vals) if v != ""], key=lambda s: s.lower())
+            options_display = ["All"] + [f"{v} ({counts.get(v.lower(),0)})" for v in unique_vals]
+            display_to_value = {f"{v} ({counts.get(v.lower(),0)})": v for v in unique_vals}
+            st.session_state["_pricing_display_map"] = display_to_value
+            # multiselect writes its value into session_state['pricing_selection_list_display']
+            st.multiselect(
+                "Filter by Pricing Model",
+                options=options_display,
+                default=st.session_state.get("pricing_selection_list_display", ["All"]),
+                key="pricing_selection_list_display",
+                help="Choose one or more Pricing Models to filter vendors (All = no filter)"
+            )
+            # Map the display selection into canonical list for later filtering
+            display_selected = st.session_state.get("pricing_selection_list_display", ["All"])
+            if display_selected and "All" in display_selected:
+                st.session_state["pricing_selection_list"] = ["All"]
+            elif display_selected:
+                mapped = []
+                for disp in display_selected:
+                    mapped_val = st.session_state["_pricing_display_map"].get(disp, disp)
+                    mapped.append(mapped_val)
+                st.session_state["pricing_selection_list"] = mapped
+            else:
+                st.session_state["pricing_selection_list"] = ["All"]
+        else:
+            st.info("Note: no 'Pricing Model' column found — Pricing filter unavailable.")
+    else:
+        st.info("Upload vendor file to enable Pricing Model filter.")
+
+    st.markdown("---")
+    # Mandatory Functionality placeholder location (fixed)
+    func_placeholder = st.empty()
+    func_placeholder.write("Mandatory Functionality (STRICT)")
+    func_placeholder.write("After you upload criteria, select required functions (options appear post-scoring).")
+    if st.session_state.get("func_selection"):
+        func_placeholder.write(f"{len(st.session_state.get('func_selection'))} function(s) selected")
+
+    st.markdown("---")
+    # CultureHost last
+    st.checkbox(
+        "CultureHost Connection",
+        value=st.session_state.get("filter_ch_yes", False),
+        key="filter_ch_yes"
+    )
+
+# -------------------------------
+# Main behaviour once both files present
+# -------------------------------
 if criteria_file is not None and vendor_df is not None:
     try:
         criteria_df = load_criteria_file(criteria_file)
@@ -388,26 +502,17 @@ if criteria_file is not None and vendor_df is not None:
 
     st.success("✅ Scoring complete!")
 
-    # --- Culturehost filter checkbox (optional) ---
-    def find_col_case_insensitive(df, target_name):
-        target_norm = normalize_case(target_name)
-        for c in df.columns:
-            if normalize_case(c) == target_norm:
-                return c
-        return None
-
-    filter_ch_yes = st.checkbox("Only show vendors with Culturehost Connection == Yes", value=False, key="filter_ch_yes")
-
-    # compute list of vendors that match the CultureHost Connection == yes
+    # Build filters results (apply sidebar selections)
+    # CultureHost filter
     filtered_vendor_names = None
-    if filter_ch_yes:
+    if st.session_state.get("filter_ch_yes", False):
         vendor_col_actual = find_col_case_insensitive(vendor_df, "vendor")
         ch_col_actual = find_col_case_insensitive(vendor_df, "CultureHost Connection")
         if vendor_col_actual is None:
-            st.warning("Vendor file does not contain a 'Vendor' column (case-insensitive); cannot apply CultureHost filter.")
+            st.warning("Vendor file does not contain a 'Vendor' column; cannot apply CultureHost filter.")
             filtered_vendor_names = []
         elif ch_col_actual is None:
-            st.warning("Vendor file does not contain a 'CultureHost Connection' column (case-insensitive).")
+            st.warning("Vendor file does not contain a 'CultureHost Connection' column.")
             filtered_vendor_names = []
         else:
             series = vendor_df[ch_col_actual].astype(str).apply(lambda x: normalize_case(x))
@@ -416,88 +521,88 @@ if criteria_file is not None and vendor_df is not None:
             if not filtered_vendor_names:
                 st.info("No vendors found with CultureHost Connection == 'Yes'")
 
-    # --- Pricing Model multi-select filter (new) ---
-    pricing_col_actual = find_col_case_insensitive(vendor_df, "Pricing Model")
+    # Pricing filter (interpret sidebar selection stored canonical in pricing_selection_list)
     pricing_filtered_vendor_names = None
-    pricing_selection = None
-
+    pricing_col_actual = find_col_case_insensitive(vendor_df, "Pricing Model")
     if pricing_col_actual is not None:
+        pricing_selection_list = st.session_state.get("pricing_selection_list", ["All"])
         raw_vals = vendor_df[pricing_col_actual].fillna("").astype(str).map(lambda s: s.strip())
-        unique_vals = sorted([v for v in pd.unique(raw_vals) if v != ""], key=lambda s: s.lower())
-        options = ["All"] + unique_vals
-        # Use multiselect so user can pick multiple pricing models; default is "All"
-        pricing_selection_list = st.multiselect(
-            "Filter by Pricing Model (multi-select)",
-            options=options,
-            default=["All"],
-            help="Choose one or more Pricing Models to filter vendors (All = no filter)"
-        )
-
-        # interpret selection
         if pricing_selection_list and ("All" in pricing_selection_list):
-            pricing_filtered_vendor_names = None  # All selected => no filter
+            pricing_filtered_vendor_names = None
         elif pricing_selection_list:
-            # Build case-insensitive set of chosen models
             chosen_lower = {s.strip().lower() for s in pricing_selection_list}
             mask = raw_vals.str.lower().isin(chosen_lower)
             pricing_filtered_vendor_names = vendor_df.loc[mask, find_col_case_insensitive(vendor_df, "vendor")].astype(str).tolist()
             if not pricing_filtered_vendor_names:
                 st.info("No vendors match the selected Pricing Model(s).")
         else:
-            pricing_filtered_vendor_names = None  # nothing selected => treat as no filter
-    else:
-        st.info("Note: no 'Pricing Model' column found in the vendor file — Pricing filter unavailable.")
+            pricing_filtered_vendor_names = None
 
-    # --- Functionality requirement filter (STRICT only) ---
-    # Allow user to require that vendors have specific function(s) (meet criteria).
-    # This is always STRICT: for each selected function, all matching criteria rows must be "Meets Criteria".
-    function_filtered_vendor_names = None
-    if not detailed_df.empty:
-        available_functions = sorted(pd.unique(detailed_df["Function"].astype(str)))
-        st.markdown("---")
-        st.write("Functionality requirement filter — require vendors to meet ALL matching criteria rows for each selected function")
-        func_selection = st.multiselect(
-            "Select functions that vendors must satisfy (vendors must meet ALL matching criteria rows for each selected function)",
+    # Build available functions list from criteria_df: only include functions with weight > 0 and exclude pricing model
+    available_functions = []
+    try:
+        crit_map_ok, _, crit_map = _ensure_columns(criteria_df, EXPECTED_CRITERIA_COLS)
+        if crit_map_ok:
+            func_to_weights = {}
+            for _, r in criteria_df.iterrows():
+                fn = normalize_case(r[crit_map["function"]])
+                req = r[crit_map["requirement"]]
+                key = _canonical_requirement_key(req)
+                w = REQUIREMENT_WEIGHTS.get(key, 0)
+                func_to_weights.setdefault(fn, 0)
+                func_to_weights[fn] = max(func_to_weights[fn], w)
+            if not detailed_df.empty:
+                funcs_in_detail = sorted(pd.unique(detailed_df["Function"].astype(str)))
+                for f in funcs_in_detail:
+                    if normalize_case(f) == "pricing model":
+                        continue
+                    if func_to_weights.get(normalize_case(f), 0) > 0:
+                        available_functions.append(f)
+    except Exception:
+        available_functions = sorted(pd.unique(detailed_df["Function"].astype(str))) if not detailed_df.empty else []
+
+    # Replace the placeholder with the actual multiselect in the sidebar (preserves ordering)
+    if available_functions:
+        # IMPORTANT: call multiselect with key='func_selection' so the widget writes into session_state automatically.
+        # Use the earlier-created placeholder to ensure this control appears in the intended sidebar location.
+        func_placeholder.multiselect(
+            "Select Mandatory functions (vendors must meet ALL matching rows)",
             options=available_functions,
-            default=[],
-            help="Pick one or more functions. Only vendors that meet all matching criteria rows for each selected function will be shown."
+            default=st.session_state.get("func_selection", []),
+            key="func_selection",
+            help="Pick functions vendors must fully satisfy (STRICT)."
         )
-        if func_selection:
-            # Pre-compute vendor x function meet stats from detailed_df
-            grp = detailed_df.groupby(["Vendor", "Function"])["Meets Criteria"].apply(list).reset_index()
-            # Build maps vendor->function->all_meet
-            vendor_func_ok = {}
-            for _, r in grp.iterrows():
-                v = r["Vendor"]
-                f = r["Function"]
-                meets_list = [str(x) for x in r["Meets Criteria"]]
-                all_meet = all(x == "Meets Criteria" for x in meets_list)
-                vendor_func_ok.setdefault(v, {})[f] = {"all": all_meet}
 
-            # Evaluate vendors (STRICT: require all matching rows to be Meets Criteria)
-            selected_vendors = []
-            vendor_name_col = find_col_case_insensitive(vendor_df, "vendor")
-            for v in vendor_df[vendor_name_col].astype(str).tolist():
-                ok_vendor = True
-                for f in func_selection:
-                    vmap = vendor_func_ok.get(v, {})
-                    stat = vmap.get(f)
-                    if stat is None:
-                        # vendor has no rows for this function -> fail
-                        ok_vendor = False
-                        break
-                    if not stat["all"]:
-                        ok_vendor = False
-                        break
-                if ok_vendor:
-                    selected_vendors.append(v)
-            function_filtered_vendor_names = selected_vendors
-            if not function_filtered_vendor_names:
-                st.info("No vendors meet the selected required functions.")
-        st.markdown("-----")
+    # Evaluate the function filter if selection exists
+    function_filtered_vendor_names = None
+    if available_functions and st.session_state.get("func_selection"):
+        chosen_funcs = st.session_state.get("func_selection", [])
+        grp = detailed_df.groupby(["Vendor", "Function"])["Meets Criteria"].apply(list).reset_index()
+        vendor_func_ok = {}
+        for _, r in grp.iterrows():
+            v = r["Vendor"]
+            f = r["Function"]
+            meets_list = [str(x) for x in r["Meets Criteria"]]
+            all_meet = all(x == "Meets Criteria" for x in meets_list)
+            vendor_func_ok.setdefault(v, {})[f] = {"all": all_meet}
 
-    # Compose filters: pricing + CultureHost + function (intersection if multiple active)
-    final_filtered_vendor_names = None
+        selected_vendors = []
+        vendor_name_col = find_col_case_insensitive(vendor_df, "vendor")
+        for v in vendor_df[vendor_name_col].astype(str).tolist():
+            ok_vendor = True
+            for f in chosen_funcs:
+                vmap = vendor_func_ok.get(v, {})
+                stat = vmap.get(f)
+                if stat is None or not stat["all"]:
+                    ok_vendor = False
+                    break
+            if ok_vendor:
+                selected_vendors.append(v)
+        function_filtered_vendor_names = selected_vendors
+        if not function_filtered_vendor_names:
+            st.info("No vendors meet the selected required functions.")
+
+    # Compose filters: intersection of active filters
     filters_lists = []
     if pricing_filtered_vendor_names is not None:
         filters_lists.append(set(pricing_filtered_vendor_names))
@@ -507,120 +612,141 @@ if criteria_file is not None and vendor_df is not None:
         filters_lists.append(set(function_filtered_vendor_names))
 
     if filters_lists:
-        # intersection of all active filters
         intersection = set.intersection(*filters_lists) if len(filters_lists) > 1 else filters_lists[0]
         final_filtered_vendor_names = list(intersection)
+    else:
+        final_filtered_vendor_names = None
 
-    # --- Top-N controls (applies the composed filters) ---
+    # Metrics & applied filters summary
+    total_vendors = len(summary_df)
+    shown_vendors = len(final_filtered_vendor_names) if final_filtered_vendor_names is not None else total_vendors
+
+    if final_filtered_vendor_names is not None:
+        filtered_summary_for_metrics = summary_df[summary_df["Vendor"].isin(final_filtered_vendor_names)].copy()
+    else:
+        filtered_summary_for_metrics = summary_df.copy()
+
+    top_score = int(filtered_summary_for_metrics["Total Score (%)"].max()) if not filtered_summary_for_metrics.empty else 0
+
+    cols = st.columns(3)
+    cols[0].metric("Vendors scored", total_vendors)
+    cols[1].metric("Vendors shown", shown_vendors)
+    cols[2].metric("Top score (%)", f"{top_score}%")
+
+    applied = []
+    if pricing_filtered_vendor_names is not None:
+        applied.append(f"Pricing models: {', '.join(st.session_state.get('pricing_selection_list', []))}")
+    if st.session_state.get("filter_ch_yes", False):
+        applied.append("CultureHost = Yes")
+    if st.session_state.get("func_selection"):
+        applied.append(f"Required functions: {', '.join(st.session_state.get('func_selection', []))}")
+    if applied:
+        st.info("Active filters: " + " | ".join(applied))
+    else:
+        st.info("No filters active — showing all scored vendors")
+
+    # Use single Top-N slider value from sidebar (st.session_state['top_n'])
     if summary_df.empty:
         st.info("No scored vendors to display.")
     else:
-        max_top = len(summary_df)
-        default_top = 5 if max_top >= 5 else max_top
-        n_top = st.slider(
-            "Number of top vendors to display",
-            min_value=1,
-            max_value=max_top,
-            value=default_top,
-            help="Select how many top vendors to show (by Total Score (%))"
-        )
+        max_top = len(filtered_summary_for_metrics)
+        requested_top = st.session_state.get("top_n", 5)
+        n_top = min(requested_top, max_top) if max_top > 0 else 0
 
-        # If filters are active, restrict the summary_source first so Top-N is among the filtered set
-        if final_filtered_vendor_names is not None:
-            summary_source = summary_df[summary_df["Vendor"].isin(final_filtered_vendor_names)].copy()
+        if n_top <= 0:
+            st.info("No vendors available for Top-N display after filtering.")
         else:
-            summary_source = summary_df.copy()
+            # Show top N vendors (after filters applied)
+            if final_filtered_vendor_names is not None:
+                summary_source = summary_df[summary_df["Vendor"].isin(final_filtered_vendor_names)].copy()
+            else:
+                summary_source = summary_df.copy()
 
-        top_summary = summary_source.sort_values("Total Score (%)", ascending=False).head(n_top)
+            top_summary = summary_source.sort_values("Total Score (%)", ascending=False).head(n_top)
 
-        # minimal top summary (Rank + Vendor + Total Score)
-        top_summary_minimal = top_summary[["Vendor", "Total Score (%)"]].copy().reset_index(drop=True)
-        top_summary_minimal.insert(0, "Rank", range(1, 1 + len(top_summary_minimal)))
+            top_summary_minimal = top_summary[["Vendor", "Total Score (%)"]].copy().reset_index(drop=True)
+            top_summary_minimal.insert(0, "Rank", range(1, 1 + len(top_summary_minimal)))
 
-        st.subheader(f"Top {n_top} Vendors — Overall Rankings")
-        display_df_no_index(top_summary_minimal)
+            st.subheader(f"Top {n_top} Vendors — Overall Rankings")
+            display_df_no_index(top_summary_minimal)
 
-        # Business area breakdown restricted to top N
-        area_cols = [c for c in summary_df.columns if c not in ["Vendor", "Total Score (%)"]]
-        if area_cols:
-            st.subheader("Business Area Breakdown (Top selection)")
-            display_df_no_index(top_summary[["Vendor"] + area_cols])
+            area_cols = [c for c in summary_df.columns if c not in ["Vendor", "Total Score (%)"]]
+            if area_cols:
+                st.subheader("Business Area Breakdown (Top selection)")
+                display_df_no_index(top_summary[["Vendor"] + area_cols])
 
-        # Vendor multi-select (from Top-N)
-        st.subheader("Inspect Vendor(s) Criteria (select from the Top selection)")
-        top_vendors = top_summary["Vendor"].tolist()
-        vendor_select = st.multiselect(
-            "Select vendor(s) to inspect",
-            options=top_vendors,
-            default=[top_vendors[0]] if top_vendors else [],
-            help="Pick one or more vendors to inspect. Each vendor will get its own tab."
-        )
+            st.subheader("Inspect Vendor(s) Criteria (select from the Top selection)")
+            top_vendors = top_summary["Vendor"].tolist()
+            vendor_select = st.multiselect(
+                "Select vendor(s) to inspect",
+                options=top_vendors,
+                default=[top_vendors[0]] if top_vendors else [],
+                help="Pick one or more vendors to inspect. Each vendor will get its own tab."
+            )
 
-        if not vendor_select:
-            st.info("Select at least one vendor to inspect their criteria.")
-        else:
-            tabs = st.tabs(vendor_select)
-            for tab_label, tab in zip(vendor_select, tabs):
-                with tab:
-                    vendor_rows = detailed_df[detailed_df["Vendor"] == tab_label]
-                    if vendor_rows.empty:
-                        st.warning(
-                            f"No detailed criteria rows found for '{tab_label}'. This can happen if the vendor "
-                            "file doesn't have matching function columns for the criteria file."
+            if not vendor_select:
+                st.info("Select at least one vendor to inspect their criteria.")
+            else:
+                tabs = st.tabs(vendor_select)
+                for tab_label, tab in zip(vendor_select, tabs):
+                    with tab:
+                        vendor_rows = detailed_df[detailed_df["Vendor"] == tab_label]
+                        if vendor_rows.empty:
+                            st.warning(
+                                f"No detailed criteria rows found for '{tab_label}'. This can happen if the vendor "
+                                "file doesn't have matching function columns for the criteria file."
+                            )
+                            continue
+
+                        met_df = vendor_rows[vendor_rows["Meets Criteria"] == "Meets Criteria"].reset_index(drop=True)
+                        not_met_df = vendor_rows[vendor_rows["Meets Criteria"] != "Meets Criteria"].reset_index(drop=True)
+
+                        st.markdown(f"**{tab_label} — Summary:** {len(met_df)} functions meet criteria; {len(not_met_df)} do not meet.")
+                        cols_left, cols_right = st.columns(2)
+                        with cols_left:
+                            with st.expander("Functions that Meet Criteria", expanded=True):
+                                if not met_df.empty:
+                                    display_df_no_index(met_df)
+                                else:
+                                    st.info("No functions meeting criteria for this vendor.")
+                        with cols_right:
+                            with st.expander("Functions that Do Not Meet Criteria", expanded=True):
+                                if not not_met_df.empty:
+                                    display_df_no_index(not_met_df)
+                                else:
+                                    st.info("All scored functions meet criteria for this vendor!")
+
+                        st.download_button(
+                            label=f"⬇️ Download {tab_label} Detailed CSV",
+                            data=convert_df(vendor_rows),
+                            file_name=f"{tab_label}_detailed.csv",
+                            mime="text/csv"
                         )
-                        continue
 
-                    met_df = vendor_rows[vendor_rows["Meets Criteria"] == "Meets Criteria"].reset_index(drop=True)
-                    not_met_df = vendor_rows[vendor_rows["Meets Criteria"] != "Meets Criteria"].reset_index(drop=True)
+            st.subheader("Detailed Results (Top selection)")
+            filtered_detailed = detailed_df[detailed_df["Vendor"].isin(top_vendors)].reset_index(drop=True)
+            display_df_no_index(filtered_detailed, height=500)
 
-                    st.markdown(f"**{tab_label} — Summary:** {len(met_df)} functions meet criteria; {len(not_met_df)} do not meet.")
-                    cols_left, cols_right = st.columns(2)
-                    with cols_left:
-                        with st.expander("Functions that Meet Criteria", expanded=True):
-                            if not met_df.empty:
-                                display_df_no_index(met_df)
-                            else:
-                                st.info("No functions meeting criteria for this vendor.")
-                    with cols_right:
-                        with st.expander("Functions that Do Not Meet Criteria", expanded=True):
-                            if not not_met_df.empty:
-                                display_df_no_index(not_met_df)
-                            else:
-                                st.info("All scored functions meet criteria for this vendor!")
+            st.download_button(
+                label="⬇️ Download Full Summary CSV",
+                data=convert_df(summary_df),
+                file_name="vendor_scores_summary_full.csv",
+                mime="text/csv"
+            )
 
-                    st.download_button(
-                        label=f"⬇️ Download {tab_label} Detailed CSV",
-                        data=convert_df(vendor_rows),
-                        file_name=f"{tab_label}_detailed.csv",
-                        mime="text/csv"
-                    )
+            st.download_button(
+                label="⬇️ Download Full Detailed CSV",
+                data=convert_df(detailed_df),
+                file_name="vendor_scores_detailed_full.csv",
+                mime="text/csv"
+            )
 
-        # Detailed Results (Top selection) - after inspect UI
-        st.subheader("Detailed Results (Top selection)")
-        filtered_detailed = detailed_df[detailed_df["Vendor"].isin(top_vendors)].reset_index(drop=True)
-        display_df_no_index(filtered_detailed, height=500)
-
-        # Download buttons
-        st.download_button(
-            label="⬇️ Download Full Summary CSV",
-            data=convert_df(summary_df),
-            file_name="vendor_scores_summary_full.csv",
-            mime="text/csv"
-        )
-
-        st.download_button(
-            label="⬇️ Download Full Detailed CSV",
-            data=convert_df(detailed_df),
-            file_name="vendor_scores_detailed_full.csv",
-            mime="text/csv"
-        )
-
-        st.download_button(
-            label=f"⬇️ Download Top {n_top} Summary CSV (Rank + Vendor + Total Score)",
-            data=convert_df(top_summary_minimal),
-            file_name=f"vendor_scores_top_{n_top}_summary_minimal.csv",
-            mime="text/csv"
-        )
+            st.download_button(
+                label=f"⬇️ Download Top {n_top} Summary CSV (Rank + Vendor + Total Score)",
+                data=convert_df(top_summary_minimal),
+                file_name=f"vendor_scores_top_{n_top}_summary_minimal.csv",
+                mime="text/csv"
+            )
 
 elif criteria_file is not None and vendor_df is None:
     st.error("No vendor file available. Upload a vendor CSV (or place the vendor file next to the app with the configured filename).")
