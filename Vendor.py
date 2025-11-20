@@ -406,23 +406,26 @@ criteria_file = st.file_uploader("Upload your System Criteria CSV", type=["csv",
 # Sidebar filters (reordered & separated)
 # Order: Top-N slider -> Pricing Model -> Mandatory Functionality -> CultureHost
 # -------------------------------
+# Create a placeholder in the sidebar for the Mandatory Functionality control so ordering is stable.
 with st.sidebar:
     st.header("Filters & Controls")
 
-    if st.button("Reset filters to defaults"):
+    def _reset_filters():
         st.session_state["filter_ch_yes"] = False
         st.session_state["pricing_selection_list"] = ["All"]
         st.session_state["pricing_selection_list_display"] = ["All"]
         st.session_state["func_selection"] = []
         st.session_state["top_n"] = 5
-        if "_pricing_display_map" in st.session_state:
-            del st.session_state["_pricing_display_map"]
-        st.experimental_rerun()
+        # remove internal mapping if present
+        st.session_state.pop("_pricing_display_map", None)
+        # No explicit st.experimental_rerun() call — Streamlit will rerun automatically on widget interaction.
+
+    st.button("Reset filters to defaults", on_click=_reset_filters)
 
     st.markdown("---")
     # Top-N slider at top of sidebar
     st.slider(
-        "Number of vendors to display",
+        "Number of vendors to display (Top N)",
         min_value=1,
         max_value=100,
         value=st.session_state.get("top_n", 5),
@@ -478,7 +481,7 @@ with st.sidebar:
     st.markdown("---")
     # CultureHost last
     st.checkbox(
-        "CultureHost Connection",
+        "Only show vendors with CultureHost Connection == Yes",
         value=st.session_state.get("filter_ch_yes", False),
         key="filter_ch_yes"
     )
@@ -563,8 +566,6 @@ if criteria_file is not None and vendor_df is not None:
 
     # Replace the placeholder with the actual multiselect in the sidebar (preserves ordering)
     if available_functions:
-        # IMPORTANT: call multiselect with key='func_selection' so the widget writes into session_state automatically.
-        # Use the earlier-created placeholder to ensure this control appears in the intended sidebar location.
         func_placeholder.multiselect(
             "Select Mandatory functions (vendors must meet ALL matching rows)",
             options=available_functions,
