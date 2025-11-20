@@ -352,12 +352,10 @@ def display_df_no_index(df: pd.DataFrame, height: int | None = None):
 # STREAMLIT APP
 # -------------------------------
 st.set_page_config(page_title="Vendor Functionality Scoring", layout="wide")
-st.title("📊 Vendor Functionality Scoring Tool")
+st.title("Booking System Functionality Scoring Tool")
 
 st.markdown(
-    "Upload a **System Criteria CSV** to score vendors against the fixed vendor functionality file.\n\n"
-    "Expected columns in Criteria file (case-insensitive): Function, Requirement, Business Area\n"
-    "If your CSV has extra header rows (e.g., a title row) the app will try to auto-detect the real header."
+    "Upload a **System Criteria CSV** to score booking system vendors"
 )
 
 # Initialize session state defaults for filters
