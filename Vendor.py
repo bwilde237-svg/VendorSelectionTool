@@ -425,7 +425,7 @@ with st.sidebar:
     st.slider(
         "Number of vendors to display",
         min_value=1,
-        max_value=60,
+        max_value=55,
         value=st.session_state.get("top_n", 5),
         key="top_n",
         help="How many top vendors to show (applies after scoring and filtering)."
