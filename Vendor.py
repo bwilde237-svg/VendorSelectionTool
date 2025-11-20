@@ -425,7 +425,7 @@ with st.sidebar:
     st.markdown("---")
     # Top-N slider at top of sidebar
     st.slider(
-        "Number of vendors to display (Top N)",
+        "Number of vendors to display",
         min_value=1,
         max_value=100,
         value=st.session_state.get("top_n", 5),
@@ -481,7 +481,7 @@ with st.sidebar:
     st.markdown("---")
     # CultureHost last
     st.checkbox(
-        "Only show vendors with CultureHost Connection == Yes",
+        "CultureHost Connection",
         value=st.session_state.get("filter_ch_yes", False),
         key="filter_ch_yes"
     )
